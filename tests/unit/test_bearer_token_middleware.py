@@ -106,3 +106,20 @@ def test_production_ignores_the_insecure_remote_escape_hatch(monkeypatch):
     with pytest.raises(SystemExit):
         require_token_for_remote_bind("0.0.0.0")
     require_token_for_remote_bind("0.0.0.0", token="s3cret")
+
+
+def test_production_profile_blocks_startup_without_token_even_without_bind_flag(monkeypatch):
+    import asyncio as _asyncio
+
+    from apps.admin_console import server
+
+    monkeypatch.delenv("ARTEMIS_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARTEMIS_BIND_REMOTE", raising=False)
+    monkeypatch.setenv("ARTEMIS_ENV", "production")
+
+    async def enter():
+        async with server._lifespan(server.app):
+            pass
+
+    with pytest.raises(SystemExit):
+        _asyncio.run(enter())

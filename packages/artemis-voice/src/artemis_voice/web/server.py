@@ -29,7 +29,9 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import secrets
+import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -57,6 +59,8 @@ CSRF_HEADER = "X-Artemis-Voice"
 MAX_JSON_BYTES = 64 * 1024
 MAX_SPEAK_CHARS = 400
 CONFIRM_TTL_SECONDS = 120
+PIN_MAX_FAILURES = 5
+PIN_LOCK_SECONDS = 60
 
 
 class VoiceWebApp:
@@ -69,6 +73,8 @@ class VoiceWebApp:
         config: VoiceConfig,
         *,
         token: str | None = None,
+        approval_pin: str | None = None,
+        production: bool | None = None,
         allowed_hosts: tuple[str, ...] = (),
         synth: Synthesizer | None = None,
     ) -> None:
@@ -77,6 +83,17 @@ class VoiceWebApp:
         self.synth = synth
         self.config = config
         self.token = token
+        # A separate secret that only the human knows (never given to automation):
+        # sensitive actions need it IN ADDITION to the API token and the confirm token.
+        self.approval_pin = approval_pin or None
+        self.production = (
+            os.environ.get("ARTEMIS_ENV", "").lower() == "production"
+            if production is None
+            else production
+        )
+        self._lock = threading.Lock()
+        self._pin_failures = 0
+        self._pin_locked_until = 0.0
         self.allowed_hosts = {h.lower() for h in allowed_hosts}
         self.current_task: str | None = None
         self._confirm_key = secrets.token_bytes(32)
@@ -162,6 +179,7 @@ class VoiceWebApp:
         return f"{nonce}.{expires}.{self._sign(nonce, expires, goal)}"
 
     def consume_confirmation(self, token: Any, goal: str) -> bool:
+        """Validate and spend a token atomically (the HTTP server is multi-threaded)."""
         if not isinstance(token, str) or token.count(".") != 2:
             return False
         nonce, raw_expires, signature = token.split(".")
@@ -169,28 +187,63 @@ class VoiceWebApp:
             expires = int(raw_expires)
         except ValueError:
             return False
-        now = time.time()
-        self._spent = {n: t for n, t in self._spent.items() if t > now}
-        if expires < now or nonce in self._spent:
-            return False
         if not hmac.compare_digest(signature, self._sign(nonce, expires, goal)):
             return False
-        self._spent[nonce] = expires
-        return True
+        now = time.time()
+        with self._lock:
+            self._spent = {n: t for n, t in self._spent.items() if t > now}
+            if expires < now or nonce in self._spent:
+                return False
+            self._spent[nonce] = expires
+            return True
 
-    async def execute(self, goal: str, confirm_token: Any = None) -> tuple[int, dict[str, Any]]:
+    def check_pin(self, supplied: Any) -> tuple[bool, int]:
+        """Constant-time PIN check with lockout. Returns (ok, http_status_if_not_ok)."""
+        with self._lock:
+            now = time.time()
+            if now < self._pin_locked_until:
+                return False, HTTPStatus.TOO_MANY_REQUESTS
+            ok = isinstance(supplied, str) and hmac.compare_digest(
+                supplied.encode(), (self.approval_pin or "").encode()
+            )
+            if ok:
+                self._pin_failures = 0
+                return True, HTTPStatus.OK
+            self._pin_failures += 1
+            if self._pin_failures >= PIN_MAX_FAILURES:
+                self._pin_failures = 0
+                self._pin_locked_until = now + PIN_LOCK_SECONDS
+            return False, HTTPStatus.FORBIDDEN
+
+    async def execute(
+        self, goal: str, confirm_token: Any = None, approval_pin: Any = None
+    ) -> tuple[int, dict[str, Any]]:
         cfg = self.config
         description = self._describe(goal)
         if description["kind"] != IntentKind.TASK.value:
             return HTTPStatus.BAD_REQUEST, {"error": "not_a_task", **description}
-        if description["needs_confirmation"] and not self.consume_confirmation(
-            confirm_token, description["goal"]
-        ):
-            return HTTPStatus.CONFLICT, {
-                "error": "confirmation_required",
-                "confirm_token": self.issue_confirmation(description["goal"]),
-                **description,
-            }
+        if description["needs_confirmation"]:
+            if self.production and not self.approval_pin:
+                return HTTPStatus.FORBIDDEN, {"error": "approval_not_configured", **description}
+            if not isinstance(confirm_token, str) or not confirm_token:
+                return HTTPStatus.CONFLICT, {
+                    "error": "confirmation_required",
+                    "confirm_token": self.issue_confirmation(description["goal"]),
+                    "needs_pin": bool(self.approval_pin),
+                    **description,
+                }
+            if self.approval_pin:
+                ok, status = self.check_pin(approval_pin)
+                if not ok:
+                    error = "too_many_attempts" if status == 429 else "invalid_pin"
+                    return status, {"error": error}
+            if not self.consume_confirmation(confirm_token, description["goal"]):
+                return HTTPStatus.CONFLICT, {
+                    "error": "confirmation_required",
+                    "confirm_token": self.issue_confirmation(description["goal"]),
+                    "needs_pin": bool(self.approval_pin),
+                    **description,
+                }
         if self.current_task:
             try:
                 running = await self.client.get_task(self.current_task)
@@ -357,7 +410,9 @@ def _make_handler(app: VoiceWebApp) -> type[BaseHTTPRequestHandler]:
                 if not isinstance(goal, str) or not goal.strip():
                     self._send(HTTPStatus.BAD_REQUEST, {"error": "missing_goal"})
                     return
-                status, payload = asyncio.run(app.execute(goal, data.get("confirm_token")))
+                status, payload = asyncio.run(
+                    app.execute(goal, data.get("confirm_token"), data.get("approval_pin"))
+                )
             elif path == "/api/speak":
                 data = self._json_body()
                 if data is None:

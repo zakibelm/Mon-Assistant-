@@ -19,10 +19,15 @@ H = {"X-Artemis-Voice": "1"}
 def running():
     servers = []
 
-    def start(stt_texts=("ouvre Chrome",), token=None, client=None, allowed=()):
+    def start(stt_texts=("ouvre Chrome",), token=None, client=None, allowed=(), **app_kwargs):
         client = client or FakeClient()
         app = VoiceWebApp(
-            client, ScriptedSTT(*stt_texts), VoiceConfig(), token=token, allowed_hosts=allowed
+            client,
+            ScriptedSTT(*stt_texts),
+            VoiceConfig(),
+            token=token,
+            allowed_hosts=allowed,
+            **app_kwargs,
         )
         server = serve(app, host="127.0.0.1", port=0)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -203,3 +208,67 @@ def test_unsafe_flags_are_refused_in_production(monkeypatch, capsys):
     assert main(["text", "--unsafe-skip-confirmation"]) == 2
     assert main(["text", "--url", "http://10.0.0.5:8000", "--allow-insecure"]) == 2
     assert "production" in capsys.readouterr().err
+
+
+SMS = {"goal": "envoie un SMS à Paul"}
+
+
+def _token(port):
+    return jpost(port, "/api/execute", SMS)[1]["confirm_token"]
+
+
+def test_pin_is_required_and_checked_before_the_token_is_spent(running):
+    port, client = running(approval_pin="4321")
+    status, data = jpost(port, "/api/execute", SMS)
+    assert status == 409 and data["needs_pin"] is True
+    token = data["confirm_token"]
+    status, data = jpost(port, "/api/execute", {**SMS, "confirm_token": token})
+    assert status == 403 and data["error"] == "invalid_pin"
+    status, _ = jpost(port, "/api/execute", {**SMS, "confirm_token": token, "approval_pin": "0000"})
+    assert status == 403 and client.submitted == []
+    # a wrong PIN did not burn the token
+    status, data = jpost(
+        port, "/api/execute", {**SMS, "confirm_token": token, "approval_pin": "4321"}
+    )
+    assert status == 200 and data["profile"] == "pro"
+
+
+def test_pin_brute_force_is_locked_out(running):
+    port, client = running(approval_pin="4321")
+    token = _token(port)
+    for _ in range(5):
+        assert (
+            jpost(port, "/api/execute", {**SMS, "confirm_token": token, "approval_pin": "x"})[0]
+            == 403
+        )
+    status, data = jpost(
+        port, "/api/execute", {**SMS, "confirm_token": token, "approval_pin": "4321"}
+    )
+    assert status == 429 and data["error"] == "too_many_attempts" and client.submitted == []
+
+
+def test_production_refuses_sensitive_actions_without_a_configured_pin(running):
+    port, client = running(production=True)
+    status, data = jpost(port, "/api/execute", SMS)
+    assert status == 403 and data["error"] == "approval_not_configured" and client.submitted == []
+    assert (
+        jpost(port, "/api/execute", {"goal": "ouvre Chrome"})[0] == 200
+    )  # normal tasks unaffected
+
+
+def test_a_token_can_only_be_spent_once_under_concurrency():
+    app = VoiceWebApp(FakeClient(), ScriptedSTT(), VoiceConfig())
+    token = app.issue_confirmation("envoie un SMS à Paul")
+    wins = []
+    barrier = threading.Barrier(16)
+
+    def attempt():
+        barrier.wait()
+        wins.append(app.consume_confirmation(token, "envoie un SMS à Paul"))
+
+    threads = [threading.Thread(target=attempt) for _ in range(16)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert wins.count(True) == 1

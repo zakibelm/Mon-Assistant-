@@ -266,6 +266,7 @@ def _serve(args: argparse.Namespace, config: VoiceConfig) -> int:
         build_stt(args, config),
         config,
         token=args.web_token,
+        approval_pin=os.environ.get("ARTEMIS_APPROVAL_PIN"),
         allowed_hosts=tuple(args.allowed_host),
         synth=build_synth(args),
     )

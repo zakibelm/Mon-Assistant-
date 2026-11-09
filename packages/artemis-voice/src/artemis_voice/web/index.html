@@ -32,6 +32,7 @@
 <textarea id="text" placeholder="Ce que j'ai compris apparaît ici — tu peux corriger avant d'exécuter."></textarea>
 <div id="warn" hidden></div>
 <div class="row">
+  <input id="pin" type="password" inputmode="numeric" autocomplete="off" placeholder="Code d'approbation" hidden>
   <button id="run" class="go" type="button" disabled>Exécuter</button>
   <button id="stop" type="button">⏹ Stop</button>
 </div>
@@ -39,7 +40,7 @@
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const mic = $("mic"), text = $("text"), runBtn = $("run"), stopBtn = $("stop"), statusEl = $("status"), warnEl = $("warn"), tokenEl = $("token"), voiceOn = $("voiceOn");
+const mic = $("mic"), text = $("text"), runBtn = $("run"), stopBtn = $("stop"), statusEl = $("status"), warnEl = $("warn"), tokenEl = $("token"), pinEl = $("pin"), voiceOn = $("voiceOn");
 const TARGET_RATE = 16000;
 let ctx = null, stream = null, node = null, source = null, chunks = [], recording = false, taskId = null, pollTimer = null;
 
@@ -173,13 +174,15 @@ text.addEventListener("input", () => { runBtn.dataset.token = ""; refreshButtons
 async function execute() {
   const goal = text.value.trim(); if (!goal) return;
   const confirm_token = runBtn.dataset.token || undefined;
+  const approval_pin = pinEl.hidden ? undefined : pinEl.value;
   runBtn.disabled = true; setStatus("Envoi…");
   try {
-    let res = await fetch("/api/execute", { method: "POST", headers: headers(true), body: JSON.stringify({ goal, confirm_token }) });
+    let res = await fetch("/api/execute", { method: "POST", headers: headers(true), body: JSON.stringify({ goal, confirm_token, approval_pin }) });
     let data = await res.json();
     if (res.status === 409 && data.error === "confirmation_required") {
-      refreshButtons(data); runBtn.dataset.sensitive = "1"; runBtn.dataset.token = data.confirm_token || ""; runBtn.disabled = false; setStatus("Action sensible : appuie encore une fois pour confirmer (valable 2 min).", "Action sensible. Appuie encore une fois pour confirmer."); return;
+      refreshButtons(data); runBtn.dataset.sensitive = "1"; runBtn.dataset.token = data.confirm_token || ""; pinEl.hidden = !data.needs_pin; pinEl.value = ""; runBtn.disabled = false; setStatus("Action sensible : appuie encore une fois pour confirmer (valable 2 min).", "Action sensible. Appuie encore une fois pour confirmer."); return;
     }
+    if (res.status === 403 && data.error === "invalid_pin") { setStatus("Code d'approbation incorrect."); runBtn.disabled = false; return; }
     if (!res.ok) { setStatus("Refusé : " + (data.error || res.status)); runBtn.disabled = false; return; }
     taskId = data.task_id; setStatus("Tâche lancée (" + data.profile + ")…", "C'est parti."); poll();
   } catch (e) { setStatus("Réseau : " + e); runBtn.disabled = false; }
