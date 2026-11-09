@@ -176,3 +176,48 @@ class SameOriginBoundaryMiddleware:
             }
         )
         await send({"type": "http.response.body", "body": body})
+
+
+class BearerTokenMiddleware:
+    """Optional shared-secret check on state-changing API calls.
+
+    Off unless ``ARTEMIS_API_TOKEN`` is set, so existing setups are unchanged. When set,
+    every ``POST``/``PUT``/``PATCH``/``DELETE`` under ``/api/`` needs
+    ``Authorization: Bearer <token>`` (what ``artemis-client`` and ``artemis-voice`` send
+    with ``--token``). Reads stay open so the local console keeps working.
+    """
+
+    _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+    def __init__(self, app, token: str | None = None) -> None:
+        self.app = app
+        self.token = token if token is not None else os.environ.get("ARTEMIS_API_TOKEN", "")
+
+    async def __call__(self, scope, receive, send) -> None:
+        if (
+            self.token
+            and scope["type"] == "http"
+            and scope["method"] in self._WRITE_METHODS
+            and scope["path"].startswith("/api/")
+        ):
+            import hmac
+
+            headers = dict(scope["headers"])
+            supplied = headers.get(b"authorization", b"").decode("latin-1")
+            supplied = supplied.removeprefix("Bearer ").strip()
+            if not hmac.compare_digest(supplied.encode(), self.token.encode()):
+                body = json.dumps({"detail": "invalid_or_missing_token"}).encode()
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [
+                            (b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode()),
+                            (b"www-authenticate", b"Bearer"),
+                        ],
+                    }
+                )
+                await send({"type": "http.response.body", "body": body})
+                return
+        await self.app(scope, receive, send)

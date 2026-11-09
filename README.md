@@ -59,6 +59,13 @@ Le texte passe par l'entrée standard, jamais par un shell. Le micro se coupe pe
 - Page web : bind local, jeton, liste des Host (anti DNS rebinding), en-tête anti-CSRF, reconfirmation côté serveur.
 - Filtre d'hallucinations Whisper, une seule tâche à la fois, « stop » toujours honoré.
 
+## Durcissement du démon et des notifications
+
+- **Jeton d'API (optionnel)** : `ARTEMIS_API_TOKEN=...` exige `Authorization: Bearer` sur toute écriture `/api/*` (lancer une tâche, stop…). Le client et `artemis-voice --token` l'envoient. Sans la variable, rien ne change. À combiner avec un accès réseau restreint (Tailscale, tunnel SSH).
+- **`ARTEMIS_NOTIFY_CMD` sans shell par défaut** : la commande est découpée en arguments, le texte des événements reste une simple donnée. Pour des pipes ou redirections, activer `ARTEMIS_NOTIFY_SHELL=1` (mode shell historique, valeurs échappées).
+- **CI** : les tests d'`artemis-voice` et des notificateurs tournent à chaque push et pull request.
+- Dépendance `posthog` inutilisée retirée.
+
 ## Limites connues
 
 - Vrai modèle Whisper, vrai micro, vrai téléphone et voix TTS réelles : non testés dans l'environnement de build (145 tests avec doublures et faux démon).

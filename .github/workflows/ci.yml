@@ -63,6 +63,12 @@ jobs:
 
       # Device, cloud, manual, and end-to-end suites require dedicated
       # infrastructure and intentionally do not run on GitHub-hosted runners.
+      - name: Run voice layer tests (every push and pull request)
+        run: >-
+          uv run --with ./packages/artemis-voice --with pytest
+          pytest packages/artemis-voice/tests tests/unit/mcp/test_notifier_script_argv.py
+          tests/unit/mcp/test_notifier_script_injection.py -q
+
       - name: Run deterministic Python tests
         if: github.event_name == 'workflow_dispatch'
         run: >-

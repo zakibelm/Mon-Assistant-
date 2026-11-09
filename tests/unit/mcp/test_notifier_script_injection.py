@@ -54,6 +54,7 @@ def test_values_cannot_escape_their_quoting_context(tmp_path, template, payload)
 def test_notifier_end_to_end(monkeypatch, tmp_path):
     marker = tmp_path / "pwned"
     out = tmp_path / "out.txt"
+    monkeypatch.setenv("ARTEMIS_NOTIFY_SHELL", "1")  # the template uses a redirection
     monkeypatch.setenv("ARTEMIS_NOTIFY_CMD", f"printf '%s|%s' '{{title}}' '{{message}}' > {out}")
     notifier = ScriptNotifier()
     assert notifier.notify("c1", f"x'; touch {marker}; '", title="T it'le")

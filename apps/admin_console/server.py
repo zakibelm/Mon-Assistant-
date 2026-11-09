@@ -71,7 +71,7 @@ from artemis.config import (
 from artemis.resources import get_bundled_showcase_dist
 
 try:
-    from admin_console.core.security import SameOriginBoundaryMiddleware
+    from admin_console.core.security import BearerTokenMiddleware, SameOriginBoundaryMiddleware
     from admin_console.core.state import ServerState, state
     from admin_console.database.connection import db_session, get_db
     from admin_console.database.repositories.session_repository import session_repo
@@ -84,7 +84,10 @@ try:
     from admin_console.services.model_service import model_service
     from admin_console.services.task_queue_service import task_queue_service
 except ImportError:
-    from apps.admin_console.core.security import SameOriginBoundaryMiddleware
+    from apps.admin_console.core.security import (
+        BearerTokenMiddleware,
+        SameOriginBoundaryMiddleware,
+    )
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
     from apps.admin_console.routers import media, replay, sessions, steps, stream, system, tasks
@@ -116,6 +119,8 @@ app.state.lifecycle_token = LIFECYCLE_TOKEN
 # exist at all; the boundary middleware rejects cross-origin browser traffic
 # and unrecognized Host headers (DNS rebinding) instead.
 app.add_middleware(SameOriginBoundaryMiddleware)
+# Opt-in shared secret for writes (set ARTEMIS_API_TOKEN); no-op when unset.
+app.add_middleware(BearerTokenMiddleware)
 
 
 async def on_startup():

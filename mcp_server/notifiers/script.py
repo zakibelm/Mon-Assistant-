@@ -71,6 +71,18 @@ def render_command(template: str, values: dict[str, str]) -> str:
     return "".join(out)
 
 
+def build_argv(template: str, values: dict[str, str]) -> list[str]:
+    """Split the template into arguments, then fill placeholders inside each argument.
+
+    No shell is involved, so values are plain data: quotes, ``;``, ``$()`` or
+    backticks in event text have no special meaning. Shell syntax in the template
+    itself (pipes, redirections) is NOT interpreted; set ``ARTEMIS_NOTIFY_SHELL=1``
+    to opt in to the legacy shell mode.
+    """
+    parts = shlex.split(template, posix=os.name != "nt")
+    return [_PLACEHOLDER.sub(lambda m: str(values.get(m.group(1), "")), part) for part in parts]
+
+
 class ScriptNotifier(BaseNotifier):
     """Notifier that executes a user-defined command or script when an event occurs.
 
@@ -114,26 +126,29 @@ class ScriptNotifier(BaseNotifier):
         trace_id = (payload or {}).get("trace_id", "")
         formatted_title = title or f"Artemis Task {event_type.capitalize()}"
 
-        # Replace template placeholders safely (values are shell-escaped per quote context)
+        # Default: argv without a shell. Legacy shell mode (opt-in) escapes values per quote context.
         try:
-            cmd = render_command(
-                cmd_template,
-                {
-                    "title": formatted_title,
-                    "message": message,
-                    "conversation_id": conversation_id,
-                    "event_type": event_type,
-                    "trace_id": trace_id,
-                },
+            values = {
+                "title": formatted_title,
+                "message": message,
+                "conversation_id": conversation_id,
+                "event_type": event_type,
+                "trace_id": trace_id,
+            }
+            use_shell = os.getenv("ARTEMIS_NOTIFY_SHELL", "").strip() in {"1", "true", "yes"}
+            cmd: str | list[str] = (
+                render_command(cmd_template, values)
+                if use_shell
+                else build_argv(cmd_template, values)
             )
             subprocess.run(
                 cmd,
-                shell=True,
+                shell=use_shell,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=10,
             )
-            logger.info(f"Custom script notification command executed: {cmd[:60]}...")
+            logger.info("Custom script notification command executed")
             return True
         except Exception as e:
             logger.warning(f"Failed to execute custom script notification: {e}")
