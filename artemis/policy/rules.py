@@ -39,7 +39,9 @@ FINANCE_PACKAGE = re.compile(
 )
 COMM_PACKAGE = re.compile(
     r"(messag|\.mms|\.sms|telephony|dialer|telecom|whatsapp|telegram|signal|gmail|outlook|\.mail"
-    r"|facebook|instagram|twitter|\.x\b|linkedin|snapchat|tiktok|discord|slack|teams|viber|wechat)",
+    r"|facebook|instagram|twitter|\.x\b|linkedin|snapchat|tiktok|discord|slack|teams|viber|wechat"
+    r"|android\.gm\b|dynamite|thoughtcrime|skype|musically|protonmail|\.k9\b|thunderbird|naver\.line"
+    r"|reddit|mastodon|bluesky|threads)",
     re.I,
 )
 COMMERCE_PACKAGE = re.compile(r"(com\.android\.vending|amazon|ebay|aliexpress|shopify|etsy)", re.I)
@@ -265,6 +267,46 @@ def parse_shell(command: str) -> ShellParse:
 
 
 # --------------------------------------------------------------------------- UI rules
+def _strict_ui() -> bool:
+    return os.environ.get("ARTEMIS_POLICY_STRICT_UI") == "1"
+
+
+def _is_horizontal(params: dict) -> bool | None:
+    """True/False when the swipe direction is known, ``None`` when it is not."""
+    direction = str(params.get("direction", "")).lower()
+    if direction in {"left", "right"}:
+        return True
+    if direction in {"up", "down"}:
+        return False
+    try:
+        dx = abs(int(params["end_x"]) - int(params["x"]))
+        dy = abs(int(params["end_y"]) - int(params["y"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+    return dx > dy
+
+
+def _swipe_verdict(action: Action, params: dict) -> Verdict:
+    """Vertical swipes scroll; horizontal ones archive/delete/dismiss in messaging and shopping apps."""
+    pkg_cls = package_class(action.foreground_package)
+    if pkg_cls == "finance":
+        return _v(
+            Decision.REQUIRE_APPROVAL,
+            "ui.finance_app",
+            "swipe inside a financial app",
+            Effect.FINANCE,
+        )
+    horizontal = _is_horizontal(params)
+    if horizontal is None or (horizontal and (pkg_cls in {"comm", "commerce"} or _strict_ui())):
+        return _v(
+            Decision.REQUIRE_APPROVAL,
+            "ui.horizontal_swipe",
+            "horizontal or unclassified swipe can archive, delete or dismiss an item",
+            Effect.DESTROY,
+        )
+    return _v(Decision.ALLOW, "ui.swipe", "scroll or swipe", Effect.NAVIGATE)
+
+
 def _ui_contextual(action: Action, what: str, *, targeted: bool = True) -> Verdict:
     """Taps, long presses, swipes, Enter: decided by what is under the finger."""
     label = (action.target_label or "").strip()
@@ -314,7 +356,7 @@ def _ui_contextual(action: Action, what: str, *, targeted: bool = True) -> Verdi
                 f"{what}: foreground app unknown",
                 Effect.UNCLASSIFIED,
             )
-        if not label and pkg_cls in {"comm", "commerce"}:
+        if not label and (pkg_cls in {"comm", "commerce"} or _strict_ui()):
             return _v(
                 Decision.REQUIRE_APPROVAL,
                 "ui.unlabeled_in_sensitive_app",
@@ -495,6 +537,9 @@ def _segment_verdict(argv: list[str], action: Action) -> Verdict:
                     ui_known=action.ui_known,
                 )  # fmt: skip
                 return _ui_contextual(tmp, "tap")
+            if sub in {"swipe", "draganddrop"} and len(nums) >= 4:
+                x1, y1, x2, y2 = (int(n) for n in nums[:4])
+                return _swipe_verdict(action, {"x": x1, "y": y1, "end_x": x2, "end_y": y2})
             return _ui_contextual(action, sub, targeted=False)
         if sub == "text":
             return _text_verdict(action)
@@ -655,14 +700,7 @@ def evaluate(action: Action) -> Verdict:
     if op in {"tap", "long_press"}:
         return _ui_contextual(action, op.replace("_", " "))
     if op == "swipe":
-        if package_class(action.foreground_package) == "finance":
-            return _v(
-                Decision.REQUIRE_APPROVAL,
-                "ui.finance_app",
-                "swipe inside a financial app",
-                Effect.FINANCE,
-            )
-        return _v(Decision.ALLOW, "ui.swipe", "scroll or swipe", Effect.NAVIGATE)
+        return _swipe_verdict(action, action.params)
     if op == "input_text":
         return _text_verdict(action)
     if op == "press_key":

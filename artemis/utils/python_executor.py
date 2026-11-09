@@ -48,6 +48,12 @@ def validate_coder_script(code_str: str) -> bool:
                 " forbidden. You MUST use canvas.resize_by_factor(factor)."
             )
 
+    from artemis.policy.host_exec import check_python_source
+
+    refusal = check_python_source(code_str)
+    if refusal:
+        raise ValueError(f"POLICY ERROR: {refusal}. Use ImageCanvas and the image libraries only.")
+
     return True
 
 

@@ -77,6 +77,9 @@ jobs:
           tests/unit/tools/test_command_tool.py
           -q
 
+      - name: Policy Engine end-to-end campaign (real entry points, simulated phone and model)
+        run: uv run --no-sync pytest tests/e2e_policy -q -p no:cacheprovider
+
       - name: Run deterministic Python tests
         if: github.event_name == 'workflow_dispatch'
         run: >-

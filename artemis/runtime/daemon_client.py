@@ -36,6 +36,18 @@ DEFAULT_DAEMON_HOST = os.environ.get("ARTEMIS_DAEMON_HOST", "127.0.0.1")
 DEFAULT_DAEMON_PORT = int(os.environ.get("ARTEMIS_DAEMON_PORT", "8000"))
 
 
+def _client_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Add the daemon bearer token (``ARTEMIS_API_TOKEN``) when one is configured.
+
+    A token-protected daemon rejects unauthenticated clients, and the MCP server and the CLI
+    talk to it through this module.
+    """
+    token = os.environ.get("ARTEMIS_API_TOKEN", "").strip()
+    if token:
+        return {**headers, "Authorization": f"Bearer {token}"}
+    return headers
+
+
 def is_standalone_forced() -> bool:
     """Return True if standalone/embedded execution is explicitly configured."""
     return os.environ.get("ARTEMIS_STANDALONE", "").lower() in ("1", "true", "yes")
@@ -253,7 +265,9 @@ def submit_task_to_daemon(
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json", "User-Agent": "Artemis-Client"},
+            headers=_client_headers(
+                {"Content-Type": "application/json", "User-Agent": "Artemis-Client"}
+            ),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -279,7 +293,9 @@ def stop_task_on_daemon(
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json", "User-Agent": "Artemis-Client"},
+            headers=_client_headers(
+                {"Content-Type": "application/json", "User-Agent": "Artemis-Client"}
+            ),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -303,7 +319,7 @@ def get_daemon_session(
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Artemis-Client"},
+            headers=_client_headers({"User-Agent": "Artemis-Client"}),
             method="GET",
         )
         with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -325,7 +341,7 @@ def get_daemon_status(
     try:
         req = urllib.request.Request(
             url,
-            headers={"User-Agent": "Artemis-Client"},
+            headers=_client_headers({"User-Agent": "Artemis-Client"}),
             method="GET",
         )
         with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -367,7 +383,9 @@ def submit_batch_to_daemon(
         req = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/json", "User-Agent": "Artemis-Client"},
+            headers=_client_headers(
+                {"Content-Type": "application/json", "User-Agent": "Artemis-Client"}
+            ),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=timeout) as response:

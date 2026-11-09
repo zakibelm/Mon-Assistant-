@@ -166,3 +166,64 @@ voies non cartographiées (voir limites 3 et 4).
 
 `uv run --no-sync pytest tests/unit/policy tests/unit/tools/test_command_tool.py -q` — 211 tests (185 + 26 de `command_tool`).
 Ajoutés au job CI bloquant. Ruff, quality ratchet et pyright passent.
+
+## 10. Campagne E2E sur les quatre vraies entrées (v1.1)
+
+**Frontière de réalité.** Réel : démon FastAPI sous uvicorn (middleware, `/api/run`, file
+de tâches, API d'approbation), serveur HTTP vocal + `ArtemisClient`, outil MCP
+`mobile_run_task`, CLI `artemis` (route démon et route autonome), fabrique de pilotes,
+garde, moteur, magasin d'approbations, journal d'audit. Simulé : le téléphone
+(`FakePhone`), le cerveau modèle/worker (`plan_runner`, `fake_worker.py`) et la sonde de
+disponibilité de l'appareil. **Ce n'est pas un test sur téléphone réel.**
+
+Exécution : `uv run --no-sync pytest tests/e2e_policy -q` (47 tests, étape dédiée de la CI).
+
+### Matrice de couverture (scénario × entrée)
+
+| Scénario | HTTP | Voix | MCP | CLI |
+|---|---|---|---|---|
+| Contexte (origine, session, demandeur) conservé jusqu'à l'action | ✅ | ✅ | ✅ | ✅ |
+| Rien ne s'exécute sans autorisation requise | ✅ | ✅ | ✅ | ✅ |
+| Même politique que HTTP | — | ✅ | ✅ | ✅ |
+| Aucun contournement du garde | ✅ | ✅ | ✅ | ✅ |
+| Rejeu d'une approbation toujours refusé | ✅ | ✅ | ✅ | ✅ |
+| Changement d'écran invalide l'approbation | ✅ | ✅ | ✅ | ✅ |
+| Requêtes simultanées sans confusion de sessions | ✅ | — | — | — |
+| Journal indisponible → aucune action en production | ✅ | ✅ | ✅ | ✅ |
+
+### Red Team
+
+- **RT-01 isolation des sessions concurrentes** : OK (identité/origine cohérentes sous concurrence).
+- **RT-02 actions indirectes** : swipes destructeurs et boutons sans libellé. Correctifs :
+  règle de swipe (shell `input swipe` inclus), mode `ARTEMIS_POLICY_STRICT_UI=1`, paquets
+  Gmail/Signal/etc. désormais classés messagerie. Limite documentée : hors mode strict, un
+  bouton sans libellé dans une app neutre n'est pas bloqué.
+- **RT-03 contournements hors pilote** : ADB direct bloqué par `command_tool._policy_gate`;
+  l'exécution hôte via `PythonExecutor` était **non restreinte** → filtre statique
+  `artemis/policy/host_exec.py` ajouté. **Ce filtre est un garde-fou, pas un bac à sable** :
+  un conteneur sans adb ni réseau reste requis.
+
+### Défauts réels trouvés et corrigés par la campagne
+
+1. Paquets Gmail/Signal non reconnus comme messagerie.
+2. `daemon_client` n'envoyait pas le jeton bearer (régression du middleware).
+3. Exécution de code hôte non restreinte dans `PythonExecutor`.
+
+### Contrôles négatifs (preuve que les tests mordent)
+
+Retirer le garde de la fabrique, ou désactiver la re-observation d'écran post-approbation,
+fait échouer les tests E2E concernés (fichiers restaurés ensuite).
+
+### Risques résiduels
+
+Origine déclarée par le client; demandeur = classe d'appelant, pas identité par utilisateur;
+origine vocale `task:python_sdk`; `MockActuator` (point d'injection de test); lectures
+`device.shell` en lecture seule; `scripts/` et sous-processus d'infrastructure hors périmètre;
+worker E2E = `fake_worker.py`, pas `artemis.main`.
+
+### Décision
+
+- Critères techniques de fusion : 47/47 E2E, 0 effet Android non autorisé observé, CI à
+  confirmer sur Linux **et** Windows (voir historique des runs).
+- **Fusion dans `main` : NON automatique** — en attente de validation humaine.
+- **Production : NO-GO** tant que le test sur téléphone réel (porte distincte) n'est pas passé.

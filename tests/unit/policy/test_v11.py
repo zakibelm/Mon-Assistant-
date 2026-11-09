@@ -58,7 +58,12 @@ def test_unlabeled_control_in_neutral_app_is_allowed():
 
 
 def test_swipes_do_not_need_a_target():
-    swipe = Action("swipe", "d", {}, foreground_package="com.android.chrome")
+    swipe = Action(
+        "swipe",
+        "d",
+        {"x": 5, "y": 900, "end_x": 5, "end_y": 100},
+        foreground_package="com.android.chrome",
+    )
     assert evaluate(swipe).decision is A
 
 
@@ -247,3 +252,40 @@ def test_session_change_invalidates_an_approval(tmp_path):
         context=PolicyContext(origin="task:frontend", session_id="s2", requester="api-bearer"),
     )  # fmt: skip
     assert store.consume(aid, theirs) is False
+
+
+# ---- RT-02: indirect actions -------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "package", ["com.whatsapp", "com.google.android.gm", "com.amazon.mShop.android.shopping"]
+)
+def test_horizontal_swipe_in_messaging_or_shopping_apps_requires_approval(package):
+    swipe = Action(
+        "swipe", "d", {"x": 900, "y": 800, "end_x": 100, "end_y": 810}, foreground_package=package
+    )
+    assert evaluate(swipe).decision is R
+
+
+def test_shell_swipe_is_judged_like_a_driver_swipe():
+    horizontal = Action(
+        "shell", "d", {"command": "input swipe 900 800 100 800"}, foreground_package="com.whatsapp"
+    )
+    vertical = Action(
+        "shell", "d", {"command": "input swipe 500 1500 500 500"}, foreground_package="com.whatsapp"
+    )
+    assert evaluate(horizontal).decision is R and evaluate(vertical).decision is A
+
+
+def test_strict_ui_mode_covers_unlabeled_controls_and_swipes_everywhere(monkeypatch):
+    plain = tap(foreground_package="com.example.notes", ui_known=True)
+    assert evaluate(plain).decision is A  # default: residual risk, documented
+    monkeypatch.setenv("ARTEMIS_POLICY_STRICT_UI", "1")
+    assert evaluate(plain).decision is R
+    swipe = Action(
+        "swipe",
+        "d",
+        {"x": 900, "y": 800, "end_x": 100, "end_y": 800},
+        foreground_package="com.example.notes",
+    )
+    assert evaluate(swipe).decision is R
