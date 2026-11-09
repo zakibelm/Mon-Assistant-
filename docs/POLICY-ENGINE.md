@@ -106,7 +106,9 @@ Les points d'entrée voix, `/api/run`, MCP et CLI convergent tous vers ce même 
 8. Latence : une lecture d'écran par tap (jusqu'à 3 s de délai maximal).
 9. **Changement de comportement** : `echo $VAR` et autres expansions sont refusés (`UNKNOWN`) ; deux
    tests existants ont été adaptés (`printenv`, `cat`) sans assouplir la politique.
-10. Le mode `ARTEMIS_POLICY_MODE=audit` (journal seul) est ignoré si `ARTEMIS_ENV=production`.
+10. **Windows** : les permissions `0600` du journal ne sont pas appliquées sur NTFS (le test correspondant
+    est ignoré sur Windows, explicitement). Protéger `ARTEMIS_POLICY_DIR` par ACL du dossier.
+11. Le mode `ARTEMIS_POLICY_MODE=audit` (journal seul) est ignoré si `ARTEMIS_ENV=production`.
 
 ## 7. Rapport Red Team
 

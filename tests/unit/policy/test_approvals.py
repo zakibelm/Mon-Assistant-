@@ -15,6 +15,7 @@
 """Approvals: bound to the exact action, expiring, single-use, atomic; plus engine failure modes."""
 
 import concurrent.futures as cf
+import sys
 import time
 
 import pytest
@@ -222,6 +223,9 @@ def test_audit_links_decision_and_outcome_without_leaking_content(engine, phone)
     assert any(e["event"] == "outcome" and e["trace_id"] == trace for e in entries)
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX mode bits (0600) are not enforced on NTFS; see docs"
+)
 def test_audit_file_is_private(engine, phone):
     import stat
 
