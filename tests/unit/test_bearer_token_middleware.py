@@ -75,10 +75,15 @@ def test_websockets_are_closed_without_token():
     assert _call(mw, "GET", "/api/stream/ws", "Bearer s3cret", scope_type="websocket") == 200
 
 
-def test_readiness_and_console_shell_stay_open():
+def test_status_is_private_and_only_health_is_open():
     mw = BearerTokenMiddleware(_ok, token="s3cret")
-    assert _call(mw, "GET", "/api/status") == 200
+    assert _call(mw, "GET", "/api/status") == 401
+    assert _call(mw, "GET", "/api/status", "Bearer s3cret") == 200
     assert _call(mw, "GET", "/api/health") == 200
+
+
+def test_console_shell_stays_open():
+    mw = BearerTokenMiddleware(_ok, token="s3cret")
     assert _call(mw, "GET", "/") == 200
 
 
@@ -92,3 +97,12 @@ def test_remote_bind_requires_a_token(monkeypatch):
     require_token_for_remote_bind("0.0.0.0", token="s3cret")
     monkeypatch.setenv("ARTEMIS_ALLOW_INSECURE_REMOTE", "1")
     require_token_for_remote_bind("192.168.1.5")
+
+
+def test_production_ignores_the_insecure_remote_escape_hatch(monkeypatch):
+    monkeypatch.delenv("ARTEMIS_API_TOKEN", raising=False)
+    monkeypatch.setenv("ARTEMIS_ALLOW_INSECURE_REMOTE", "1")
+    monkeypatch.setenv("ARTEMIS_ENV", "production")
+    with pytest.raises(SystemExit):
+        require_token_for_remote_bind("0.0.0.0")
+    require_token_for_remote_bind("0.0.0.0", token="s3cret")

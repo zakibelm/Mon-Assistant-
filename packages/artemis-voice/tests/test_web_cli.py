@@ -71,18 +71,51 @@ def test_transcribe_then_execute_flow(running):
     assert status == 200 and st["done"] and st["succeeded"]
 
 
-def test_server_enforces_confirmation_even_if_client_skips_it(running):
+def test_sensitive_goal_needs_a_server_issued_single_use_token(running):
     port, client = running()
-    status, data = jpost(port, "/api/execute", {"goal": "envoie un SMS à Paul"})
+    goal = {"goal": "envoie un SMS à Paul"}
+    status, data = jpost(port, "/api/execute", goal)
     assert status == 409 and data["error"] == "confirmation_required" and client.submitted == []
-    status, data = jpost(port, "/api/execute", {"goal": "envoie un SMS à Paul", "confirmed": True})
+    token = data["confirm_token"]
+    status, data = jpost(port, "/api/execute", {**goal, "confirm_token": token})
     assert status == 200 and data["profile"] == "pro"
+    # replay is refused (and a fresh token is issued)
+    status, again = jpost(port, "/api/execute", {**goal, "confirm_token": token})
+    assert status == 409 and again["confirm_token"] != token
 
 
-def test_confirmed_must_be_literal_true(running):
+def test_bare_confirmed_flag_is_worthless(running):
     port, client = running()
-    status, _ = jpost(port, "/api/execute", {"goal": "supprime les photos", "confirmed": "yes"})
+    for flag in (True, "yes", 1):
+        status, _ = jpost(port, "/api/execute", {"goal": "supprime les photos", "confirmed": flag})
+        assert status == 409
+    assert client.submitted == []
+
+
+def test_token_is_bound_to_the_exact_goal_and_expires(running, monkeypatch):
+    port, client = running()
+    _, data = jpost(port, "/api/execute", {"goal": "envoie un SMS à Paul"})
+    token = data["confirm_token"]
+    status, _ = jpost(port, "/api/execute", {"goal": "supprime les photos", "confirm_token": token})
     assert status == 409 and client.submitted == []
+    import time as _time
+
+    real = _time.time
+    monkeypatch.setattr("artemis_voice.web.server.time.time", lambda: real() + 600)
+    status, _ = jpost(
+        port, "/api/execute", {"goal": "envoie un SMS à Paul", "confirm_token": token}
+    )
+    assert status == 409 and client.submitted == []
+
+
+def test_bare_bearer_token_is_refused():
+    from artemis_voice.web.server import VoiceWebApp
+
+    app = VoiceWebApp(object(), object(), VoiceConfig(), token="s3cret")
+    assert app.token_ok("Bearer s3cret")
+    assert not app.token_ok("s3cret")
+    assert not app.token_ok("Basic s3cret")
+    assert not app.token_ok(None)
 
 
 def test_busy_task_is_refused(running):
@@ -163,3 +196,10 @@ def test_cli_config_and_guardrails(capsys):
     assert main(["text", "--url", "http://203.0.113.9:8000"]) == 2
     skip = build_config(_build_parser().parse_args(["text", "--unsafe-skip-confirmation"]))
     assert skip.confirm_sensitive is False
+
+
+def test_unsafe_flags_are_refused_in_production(monkeypatch, capsys):
+    monkeypatch.setenv("ARTEMIS_ENV", "production")
+    assert main(["text", "--unsafe-skip-confirmation"]) == 2
+    assert main(["text", "--url", "http://10.0.0.5:8000", "--allow-insecure"]) == 2
+    assert "production" in capsys.readouterr().err

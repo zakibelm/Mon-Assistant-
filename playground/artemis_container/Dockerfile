@@ -56,4 +56,6 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
   CMD curl -f http://localhost:8080/api/system/health || curl -f http://localhost:8080/ || exit 1
 
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
+# Refuse to start without ARTEMIS_API_TOKEN (checked at ASGI startup).
+ENV ARTEMIS_BIND_REMOTE=1
 CMD ["uvicorn", "apps.admin_console.server:app", "--host", "0.0.0.0", "--port", "8080"]

@@ -247,6 +247,12 @@ async def resume_task():
     return {"status": "not_paused"}
 
 
+@router.get("/api/health")
+async def get_health():
+    """Minimal readiness probe: no goals, sessions or device details."""
+    return {"status": "ready"}
+
+
 @router.get("/api/status")
 async def get_status():
     # Watchdog check to ensure background worker is alive

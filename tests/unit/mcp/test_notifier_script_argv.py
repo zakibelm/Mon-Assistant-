@@ -57,3 +57,14 @@ def test_shell_mode_is_opt_in_and_still_escapes(tmp_path, monkeypatch):
     assert kw["shell"] is True and isinstance(cmd, str)
     subprocess.run(cmd, shell=True, check=True)
     assert not marker.exists()
+
+
+def test_production_never_uses_the_shell_mode(monkeypatch):
+    monkeypatch.setenv("ARTEMIS_NOTIFY_CMD", "echo {message}")
+    monkeypatch.setenv("ARTEMIS_NOTIFY_SHELL", "1")
+    monkeypatch.setenv("ARTEMIS_ENV", "production")
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: calls.append((cmd, kw)))
+    assert ScriptNotifier().notify("c1", "hi") is True
+    cmd, kw = calls[0]
+    assert kw["shell"] is False and cmd == ["echo", "hi"]

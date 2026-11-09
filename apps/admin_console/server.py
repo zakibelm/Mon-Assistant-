@@ -108,6 +108,10 @@ init_ls_address()
 @asynccontextmanager
 async def _lifespan(_app: "FastAPI"):
     """Start server resources and release them on shutdown."""
+    # `uvicorn apps.admin_console.server:app` (Docker) skips run_ui_server(), so the
+    # remote-bind check must also run here. Container images set ARTEMIS_BIND_REMOTE=1.
+    if os.environ.get("ARTEMIS_BIND_REMOTE") == "1":
+        require_token_for_remote_bind("0.0.0.0")
     await on_startup()
     try:
         yield

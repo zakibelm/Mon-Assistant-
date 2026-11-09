@@ -84,6 +84,12 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
 
 
 def build_config(args: argparse.Namespace) -> VoiceConfig:
+    if os.environ.get("ARTEMIS_ENV", "").lower() == "production" and (
+        args.unsafe_skip_confirmation or args.allow_insecure
+    ):
+        raise VoiceError(
+            "--unsafe-skip-confirmation and --allow-insecure are refused when ARTEMIS_ENV=production"
+        )
     return VoiceConfig(
         base_url=args.url,
         token=args.token,
@@ -328,8 +334,8 @@ def _doctor(args: argparse.Namespace, config: VoiceConfig) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    config = build_config(args)
     try:
+        config = build_config(args)
         if args.command in {"listen", "text", "file"}:
             return asyncio.run(_run_assistant(args, config))
         if args.command == "serve":

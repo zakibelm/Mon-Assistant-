@@ -65,4 +65,6 @@ EXPOSE 8080
 # e.g. `docker run -p 127.0.0.1:8080:8080 ...`, and reach it remotely through
 # a Tailscale/SSH tunnel. (0.0.0.0 here is container-internal and required
 # for the port mapping to work.)
+# Refuse to start without ARTEMIS_API_TOKEN (checked at ASGI startup).
+ENV ARTEMIS_BIND_REMOTE=1
 CMD ["uvicorn", "apps.admin_console.server:app", "--host", "0.0.0.0", "--port", "8080"]

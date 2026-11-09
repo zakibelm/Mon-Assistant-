@@ -61,11 +61,20 @@ Le texte passe par l'entrée standard, jamais par un shell. Le micro se coupe pe
 
 ## Durcissement du démon et des notifications
 
-- **Jeton d'API** : avec `ARTEMIS_API_TOKEN=...`, toute requête (HTTP ou WebSocket, lectures comprises) vers `/api/`, `/images/`, `/videos/` et `/local_file` exige `Authorization: Bearer <jeton>` (schéma exact, jeton nu refusé). Cela inclut le flux d'écran du téléphone `/api/stream/device-live`. `/api/status` et `/api/health` restent ouverts pour les vérifications de disponibilité. Le client et `artemis-voice --token` envoient l'en-tête. Sans la variable, rien ne change en boucle locale.
-- **Écoute distante** : lancer le serveur sur une adresse non locale est refusé sans `ARTEMIS_API_TOKEN` (exception explicite : `ARTEMIS_ALLOW_INSECURE_REMOTE=1`). Si le jeton est défini, la console web dans le navigateur ne peut plus lire ces routes : utilise le client, ou un tunnel Tailscale/SSH avec jeton. Les images Docker lancent uvicorn directement : définis-y le jeton.
+- **Jeton d'API** : avec `ARTEMIS_API_TOKEN=...`, toute requête (HTTP ou WebSocket, lectures comprises) vers `/api/`, `/images/`, `/videos/` et `/local_file` exige `Authorization: Bearer <jeton>` (schéma exact, jeton nu refusé), y compris le flux d'écran `/api/stream/device-live` et `/api/status`. Seul `/api/health` (`{"status":"ready"}`, sans objectif ni session) reste ouvert. Sans la variable, rien ne change en boucle locale ; la console web du navigateur ne peut plus lire ces routes quand le jeton est défini (utilise le client ou un tunnel Tailscale/SSH).
+- **Écoute distante** : refusée sans jeton, que le serveur soit lancé par la commande Artemis ou directement par `uvicorn` (les images Docker définissent `ARTEMIS_BIND_REMOTE=1`, donc le conteneur ne démarre pas sans `ARTEMIS_API_TOKEN`).
+- **Confirmation des actions sensibles (page vocale)** : le serveur émet un jeton de confirmation de 2 minutes, à usage unique et lié à la phrase exacte. Un simple `confirmed: true` envoyé par un client ne vaut plus rien. Sur la page, appuyer deux fois (la seconde confirme).
+- **Profil production** : avec `ARTEMIS_ENV=production`, `--unsafe-skip-confirmation`, `--allow-insecure`, `ARTEMIS_ALLOW_INSECURE_REMOTE` et `ARTEMIS_NOTIFY_SHELL` sont refusés ou ignorés.
 - **`ARTEMIS_NOTIFY_CMD` sans shell par défaut** : la commande est découpée en arguments, le texte des événements reste une simple donnée. Pour des pipes ou redirections, activer `ARTEMIS_NOTIFY_SHELL=1` (mode shell historique, valeurs échappées).
 - **CI** : les tests d'`artemis-voice` et des notificateurs tournent à chaque push et pull request.
 - Dépendance `posthog` inutilisée retirée.
+
+## Limites connues (sécurité)
+
+- Le jeton est un secret partagé unique, sans rôles par opération ni par appareil.
+- La détection d'actions sensibles reste lexicale (listes de mots FR/EN/AR) : une paraphrase peut passer. Un *Policy Engine* côté moteur, qui contrôle l'effet réel avant paiement, envoi ou suppression, reste à construire. Tant qu'il n'existe pas, ne branche pas Mon-Assistant sur un téléphone contenant des données sensibles ni sur un réseau non maîtrisé.
+- Contenu hostile affiché à l'écran ou voix externe (injection) : non testé.
+- Suite `tests/unit` complète : au moins un test amont échoue encore (`test_turn_index_snapshot`), donc elle n'est pas bloquante en CI.
 
 ## Limites connues
 

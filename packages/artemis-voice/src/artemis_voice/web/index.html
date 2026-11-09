@@ -168,17 +168,17 @@ function refreshButtons(data) {
   warnEl.hidden = !sensitive;
   warnEl.textContent = sensitive ? "⚠️ Action sensible (paiement, envoi, suppression…). Vérifie la phrase avant de confirmer." : "";
 }
-text.addEventListener("input", () => refreshButtons(null));
+text.addEventListener("input", () => { runBtn.dataset.token = ""; refreshButtons(null); });
 
 async function execute() {
   const goal = text.value.trim(); if (!goal) return;
-  const confirmed = runBtn.dataset.sensitive === "1";
+  const confirm_token = runBtn.dataset.token || undefined;
   runBtn.disabled = true; setStatus("Envoi…");
   try {
-    let res = await fetch("/api/execute", { method: "POST", headers: headers(true), body: JSON.stringify({ goal, confirmed }) });
+    let res = await fetch("/api/execute", { method: "POST", headers: headers(true), body: JSON.stringify({ goal, confirm_token }) });
     let data = await res.json();
     if (res.status === 409 && data.error === "confirmation_required") {
-      refreshButtons(data); runBtn.dataset.sensitive = "1"; runBtn.disabled = false; setStatus("Action sensible : confirme pour continuer.", "Action sensible. Confirme pour continuer."); return;
+      refreshButtons(data); runBtn.dataset.sensitive = "1"; runBtn.dataset.token = data.confirm_token || ""; runBtn.disabled = false; setStatus("Action sensible : appuie encore une fois pour confirmer (valable 2 min).", "Action sensible. Appuie encore une fois pour confirmer."); return;
     }
     if (!res.ok) { setStatus("Refusé : " + (data.error || res.status)); runBtn.disabled = false; return; }
     taskId = data.task_id; setStatus("Tâche lancée (" + data.profile + ")…", "C'est parti."); poll();

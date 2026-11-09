@@ -135,7 +135,15 @@ class ScriptNotifier(BaseNotifier):
                 "event_type": event_type,
                 "trace_id": trace_id,
             }
-            use_shell = os.getenv("ARTEMIS_NOTIFY_SHELL", "").strip() in {"1", "true", "yes"}
+            use_shell = (
+                os.getenv("ARTEMIS_NOTIFY_SHELL", "").strip()
+                in {
+                    "1",
+                    "true",
+                    "yes",
+                }
+                and os.getenv("ARTEMIS_ENV", "").lower() != "production"
+            )
             cmd: str | list[str] = (
                 render_command(cmd_template, values)
                 if use_shell

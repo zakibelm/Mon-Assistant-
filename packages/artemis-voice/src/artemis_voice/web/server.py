@@ -26,8 +26,11 @@ server-side sensitivity re-check (the client cannot skip the confirmation).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
+import secrets
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -53,6 +56,7 @@ from artemis_voice.tts.base import Synthesizer, clean_for_speech
 CSRF_HEADER = "X-Artemis-Voice"
 MAX_JSON_BYTES = 64 * 1024
 MAX_SPEAK_CHARS = 400
+CONFIRM_TTL_SECONDS = 120
 
 
 class VoiceWebApp:
@@ -75,6 +79,8 @@ class VoiceWebApp:
         self.token = token
         self.allowed_hosts = {h.lower() for h in allowed_hosts}
         self.current_task: str | None = None
+        self._confirm_key = secrets.token_bytes(32)
+        self._spent: dict[str, float] = {}
 
     # -- access control -----------------------------------------------------
 
@@ -90,7 +96,10 @@ class VoiceWebApp:
     def token_ok(self, authorization: str | None) -> bool:
         if not self.token:
             return True
-        supplied = (authorization or "").removeprefix("Bearer ").strip()
+        scheme, _, supplied = (authorization or "").partition(" ")
+        if scheme != "Bearer":
+            return False
+        supplied = supplied.strip()
         return hmac.compare_digest(supplied.encode(), self.token.encode())
 
     # -- API ------------------------------------------------------------------
@@ -139,13 +148,49 @@ class VoiceWebApp:
         except TTSError as exc:
             return HTTPStatus.BAD_GATEWAY, {"error": str(exc)}
 
-    async def execute(self, goal: str, confirmed: bool) -> tuple[int, dict[str, Any]]:
+    # -- server-side confirmation ---------------------------------------------
+    # A bare ``confirmed: true`` proves nothing. The server hands out a short-lived,
+    # single-use token bound to the exact goal; it is only accepted back once.
+
+    def _sign(self, nonce: str, expires: int, goal: str) -> str:
+        msg = f"{nonce}.{expires}.{hashlib.sha256(goal.encode()).hexdigest()}".encode()
+        return hmac.new(self._confirm_key, msg, hashlib.sha256).hexdigest()
+
+    def issue_confirmation(self, goal: str) -> str:
+        nonce = secrets.token_hex(8)
+        expires = int(time.time()) + CONFIRM_TTL_SECONDS
+        return f"{nonce}.{expires}.{self._sign(nonce, expires, goal)}"
+
+    def consume_confirmation(self, token: Any, goal: str) -> bool:
+        if not isinstance(token, str) or token.count(".") != 2:
+            return False
+        nonce, raw_expires, signature = token.split(".")
+        try:
+            expires = int(raw_expires)
+        except ValueError:
+            return False
+        now = time.time()
+        self._spent = {n: t for n, t in self._spent.items() if t > now}
+        if expires < now or nonce in self._spent:
+            return False
+        if not hmac.compare_digest(signature, self._sign(nonce, expires, goal)):
+            return False
+        self._spent[nonce] = expires
+        return True
+
+    async def execute(self, goal: str, confirm_token: Any = None) -> tuple[int, dict[str, Any]]:
         cfg = self.config
         description = self._describe(goal)
         if description["kind"] != IntentKind.TASK.value:
             return HTTPStatus.BAD_REQUEST, {"error": "not_a_task", **description}
-        if description["needs_confirmation"] and not confirmed:
-            return HTTPStatus.CONFLICT, {"error": "confirmation_required", **description}
+        if description["needs_confirmation"] and not self.consume_confirmation(
+            confirm_token, description["goal"]
+        ):
+            return HTTPStatus.CONFLICT, {
+                "error": "confirmation_required",
+                "confirm_token": self.issue_confirmation(description["goal"]),
+                **description,
+            }
         if self.current_task:
             try:
                 running = await self.client.get_task(self.current_task)
@@ -312,7 +357,7 @@ def _make_handler(app: VoiceWebApp) -> type[BaseHTTPRequestHandler]:
                 if not isinstance(goal, str) or not goal.strip():
                     self._send(HTTPStatus.BAD_REQUEST, {"error": "missing_goal"})
                     return
-                status, payload = asyncio.run(app.execute(goal, data.get("confirmed") is True))
+                status, payload = asyncio.run(app.execute(goal, data.get("confirm_token")))
             elif path == "/api/speak":
                 data = self._json_body()
                 if data is None:
