@@ -90,3 +90,11 @@ cd packages/artemis-voice && pip install -e ".[dev]" && pytest -q
 ## Licence
 
 Apache 2.0, comme Artemis.
+
+## Moteur de politique (Policy Engine v1)
+
+Un contrôle d'autorisation central se place juste avant tout effet sur le téléphone, quel que soit le
+point d'entrée (voix, API, MCP, CLI). Décisions : `ALLOW`, `REQUIRE_APPROVAL`, `DENY`, `UNKNOWN`
+(bloqué). Les approbations passent par un canal séparé (CLI locale ou jeton d'approbateur distinct du
+jeton API). **Statut : NO-GO production** — non testé sur téléphone réel. Détails, règles, couverture,
+limites et rapport Red Team : [`docs/POLICY-ENGINE.md`](docs/POLICY-ENGINE.md).

@@ -115,6 +115,30 @@ HANG_GUIDANCE = (
 )
 
 
+async def _policy_gate(command: str, driver: Any, ctx: "ArtemisContext | None") -> str | None:
+    """Authorize a shell line before this tool spawns ``adb`` itself (bypasses the driver).
+
+    Returns an error message if the policy refuses the command, otherwise ``None``.
+    """
+    from artemis.policy import Action, PolicyViolation, current_context, get_engine
+
+    guard = driver if hasattr(driver, "check_shell") else None
+    if guard is None and ctx is not None:
+        candidate = getattr(ctx, "_active_driver", None)
+        guard = candidate if hasattr(candidate, "check_shell") else None
+    try:
+        if guard is not None:
+            await guard.check_shell(command)
+        else:
+            device_id = getattr(getattr(ctx, "device", None), "device_id", None) or "unknown"
+            await get_engine().enforce(
+                Action("shell", device_id, {"command": command}, context=current_context())
+            )
+    except PolicyViolation as violation:
+        return str(violation)
+    return None
+
+
 def _adb_binary() -> str:
     """Resolves the adb executable through the shared toolchain resolver."""
     try:
@@ -677,6 +701,10 @@ class RunAdbCommandTool(ArtemisTool):
         ):
             return await driver.execute_shell(cmd_line, timeout_seconds=wait_seconds)
 
+        denied = await _policy_gate(cmd_line, driver, ctx)
+        if denied:
+            return ToolFailure(denied)
+
         registry = get_adb_task_registry(ctx)
 
         device_id = None
@@ -1072,6 +1100,10 @@ class RunShortAdbCommandTool(ArtemisTool):
             and hasattr(driver, "execute_shell")
         ):
             return await driver.execute_shell(cmd_line, timeout_seconds=timeout)
+
+        denied = await _policy_gate(cmd_line, driver, ctx)
+        if denied:
+            return ToolFailure(denied)
 
         device_id = None
         if ctx and hasattr(ctx, "device") and ctx.device:

@@ -32,6 +32,17 @@ logger = get_logger(__name__)
 
 
 def create_driver(ctx: "ArtemisContext") -> BaseDeviceDriver:
+    """Build the driver for this context, always behind the policy guard.
+
+    This is the ONLY place a driver is constructed, so wrapping here puts every effect
+    (voice, /api/run, MCP, CLI, console) behind the same policy decision.
+    """
+    from artemis.policy.guard import PolicyGuardedDriver
+
+    return PolicyGuardedDriver(_build_driver(ctx))
+
+
+def _build_driver(ctx: "ArtemisContext") -> BaseDeviceDriver:
     """Instantiates the appropriate BaseDeviceDriver based on the runtime context."""
     # 1. Cloud mode check. Cloud devices are reached through the gateway's
     # RemoteUIAutomatorClient; ARTEMIS_HIERARCHY_BACKEND does not apply there

@@ -161,7 +161,7 @@ async def test_run_command_persistent_env(mock_exec, mock_ctx):
 
     res2 = await run_command.ainvoke(
         {
-            "CommandLine": "echo $ARTEMIS_TEST_ENV",
+            "CommandLine": "printenv ARTEMIS_TEST_ENV",  # `echo $VAR` is refused by the Policy Engine
             "Cwd": "/data/local/tmp",
             "RunPersistent": True,
             "RequestedTerminalID": terminal_id,
@@ -332,7 +332,7 @@ async def test_run_command_sync_long_output(mock_exec, mock_ctx):
     run_command = get_run_adb_command_tool(mock_ctx)
     result = await run_command.ainvoke(
         {
-            "CommandLine": "generate_long_output",
+            "CommandLine": "cat /data/local/tmp/long_output.log",  # classified read-only by the Policy Engine
             "Cwd": "/data/local/tmp",
             "RunPersistent": False,
             "WaitMsBeforeAsync": 500,

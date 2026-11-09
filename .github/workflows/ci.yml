@@ -66,13 +66,15 @@ jobs:
       - name: Install the voice package into the locked environment
         run: uv pip install --no-deps -e packages/artemis-voice
 
-      - name: Run voice layer and hardening tests (every push and pull request)
+      - name: Run voice layer, hardening and Policy Engine tests (every push and pull request)
         run: >-
           uv run --no-sync pytest
           packages/artemis-voice/tests
           tests/unit/mcp/test_notifier_script_argv.py
           tests/unit/mcp/test_notifier_script_injection.py
           tests/unit/test_bearer_token_middleware.py
+          tests/unit/policy
+          tests/unit/tools/test_command_tool.py
           -q
 
       - name: Run deterministic Python tests
