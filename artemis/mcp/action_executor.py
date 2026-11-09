@@ -45,6 +45,7 @@ from artemis.mcp.action_specs import exception_prefix
 from artemis.mcp.action_session import ActionSession, get_action_session
 from artemis.mcp.action_types import ActionCode, ActionResult
 from artemis.mcp.actuators.adb import AdbActuator
+from artemis.policy import ensure_context
 from artemis.agents.validator.tool_declarations import (
     ToolExecutionResult,
     normalize_coordinate_target,
@@ -132,6 +133,7 @@ class McpActionExecutor:
         still refreshed after every action: it is what the next observation
         shows).
         """
+        ensure_context("mcp")
         raw_name = name.split(":")[-1] if ":" in name else name
 
         if raw_name in AGENT_TOOL_NAMES:

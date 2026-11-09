@@ -34,6 +34,11 @@ def _is_production() -> bool:
     return os.environ.get("ARTEMIS_ENV", "").lower() == "production"
 
 
+def audit_required() -> bool:
+    """In production (or ``ARTEMIS_POLICY_AUDIT_REQUIRED=1``) no action runs without its trace."""
+    return _is_production() or os.environ.get("ARTEMIS_POLICY_AUDIT_REQUIRED") == "1"
+
+
 def current_mode() -> str:
     """``enforce`` (default) or ``audit`` (log only; development, ignored in production)."""
     mode = os.environ.get("ARTEMIS_POLICY_MODE", "enforce").lower()
@@ -83,20 +88,37 @@ class PolicyEngine:
 
     async def enforce(self, action: Action) -> str:
         """Return a trace id if the action may proceed; raise :class:`PolicyViolation` if not."""
+        trace_id, _ = await self.enforce_with_status(action)
+        return trace_id
+
+    async def enforce_with_status(self, action: Action) -> tuple[str, bool]:
+        """Like :meth:`enforce`, also telling whether a human approval was consumed."""
         trace_id = uuid.uuid4().hex[:16]
         verdict = self.evaluate(action)
         mode = current_mode()
         self._safe_audit_decision(trace_id, action, verdict, mode)
         if verdict.decision is Decision.ALLOW:
-            return trace_id
+            return trace_id, False
         if mode == "audit":
             self._safe_audit_outcome(trace_id, "audit_only_not_blocked", verdict.decision.value)
-            return trace_id
+            return trace_id, False
         if verdict.decision is Decision.REQUIRE_APPROVAL:
             await self._await_approval(trace_id, action, verdict)
-            return trace_id
+            return trace_id, True
         self._safe_audit_outcome(trace_id, "blocked", verdict.decision.value)
         raise PolicyViolation(verdict, trace_id)
+
+    def reject_stale_approval(self, trace_id: str, action: Action) -> None:
+        """The approved screen no longer matches reality: refuse, the approval is already spent."""
+        self._safe_audit_outcome(trace_id, "blocked", "context_changed_after_approval")
+        raise PolicyViolation(
+            Verdict(
+                Decision.DENY,
+                f"{rules.POLICY_VERSION}/approval.context_changed",
+                "the screen changed between approval and execution",
+            ),
+            trace_id,
+        )
 
     async def _await_approval(self, trace_id: str, action: Action, verdict: Verdict) -> None:
         try:
@@ -160,7 +182,7 @@ class PolicyEngine:
         try:
             self.audit.decision(trace_id, action, verdict, mode)
         except Exception:  # noqa: BLE001
-            if mode == "enforce" and verdict.decision is not Decision.ALLOW:
+            if mode == "enforce" and (verdict.decision is not Decision.ALLOW or audit_required()):
                 raise PolicyViolation(
                     Verdict(
                         Decision.DENY,

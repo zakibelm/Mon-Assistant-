@@ -23,6 +23,7 @@ from artemis.policy.model import (
     PolicyViolation,
     Verdict,
     current_context,
+    ensure_context,
     set_context,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "Verdict",
     "current_context",
     "current_mode",
+    "ensure_context",
     "get_engine",
     "set_context",
     "set_engine",

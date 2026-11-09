@@ -525,6 +525,11 @@ class TaskQueueService:
             env["ARTEMIS_SESSION_ID"] = str(sess_id)
         env["ARTEMIS_TASK_INGRESS"] = str(task_item.get("ingress", "frontend"))
         env["ARTEMIS_TASK_WORKER"] = "1"
+        # Policy Engine: identity of whoever queued the task, carried across the worker boundary.
+        # With a single shared bearer token this is a class of caller, not a per-user identity.
+        env["ARTEMIS_POLICY_REQUESTER"] = (
+            "api-bearer" if os.environ.get("ARTEMIS_API_TOKEN") else "api-anonymous"
+        )
         target.endpoint.apply_to_environment(env)
         env[DeviceExecutionLock.LOCK_SCOPE_ENV] = target.lock_scope
         queue_ticket = task_item.get("queue_ticket")

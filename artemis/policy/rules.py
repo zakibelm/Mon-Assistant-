@@ -265,7 +265,7 @@ def parse_shell(command: str) -> ShellParse:
 
 
 # --------------------------------------------------------------------------- UI rules
-def _ui_contextual(action: Action, what: str) -> Verdict:
+def _ui_contextual(action: Action, what: str, *, targeted: bool = True) -> Verdict:
     """Taps, long presses, swipes, Enter: decided by what is under the finger."""
     label = (action.target_label or "").strip()
     pkg_cls = package_class(action.foreground_package)
@@ -298,6 +298,29 @@ def _ui_contextual(action: Action, what: str) -> Verdict:
             f"{what} inside a financial app",
             Effect.FINANCE,
         )
+    if targeted:
+        # A pointed action whose target we could not identify must not pass as "navigation".
+        if not action.ui_known:
+            return _v(
+                Decision.REQUIRE_APPROVAL,
+                "ui.context_unavailable",
+                f"{what}: screen content could not be read, target unknown",
+                Effect.UNCLASSIFIED,
+            )
+        if action.foreground_package is None:
+            return _v(
+                Decision.REQUIRE_APPROVAL,
+                "ui.package_unknown",
+                f"{what}: foreground app unknown",
+                Effect.UNCLASSIFIED,
+            )
+        if not label and pkg_cls in {"comm", "commerce"}:
+            return _v(
+                Decision.REQUIRE_APPROVAL,
+                "ui.unlabeled_in_sensitive_app",
+                f"{what} on an unlabeled control inside a messaging/shopping app",
+                Effect.COMMUNICATE,
+            )
     return _v(
         Decision.ALLOW, "ui.navigate", f"{what} (no sensitive control detected)", Effect.NAVIGATE
     )
@@ -309,7 +332,7 @@ def _key_verdict(key: object, action: Action) -> Verdict:
     submit = name in SUBMIT_KEYS or (code in SUBMIT_KEYCODES)
     if submit:
         cls = package_class(action.foreground_package)
-        if cls in {"comm", "finance", "commerce"}:
+        if action.foreground_package is None or cls in {"comm", "finance", "commerce"}:
             return _v(
                 Decision.REQUIRE_APPROVAL, "key.submit_sensitive_app",
                 "Enter can send or confirm inside this app", Effect.COMMUNICATE,
@@ -468,10 +491,11 @@ def _segment_verdict(argv: list[str], action: Action) -> Verdict:
             if sub == "tap" and len(nums) >= 2:
                 label = action.labels.get((int(nums[0]), int(nums[1])))
                 tmp = Action(
-                    "tap", action.device_id, {}, action.foreground_package, label, action.context
-                )
+                    "tap", action.device_id, {}, action.foreground_package, label, action.context,
+                    ui_known=action.ui_known,
+                )  # fmt: skip
                 return _ui_contextual(tmp, "tap")
-            return _ui_contextual(action, sub)
+            return _ui_contextual(action, sub, targeted=False)
         if sub == "text":
             return _text_verdict(action)
         if sub == "keyevent":

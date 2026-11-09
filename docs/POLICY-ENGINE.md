@@ -1,6 +1,6 @@
-# Policy Engine v1 — contrôle d'autorisation central
+# Policy Engine v1.1 — contrôle d'autorisation central
 
-> **Statut : NO-GO pour la production.** Le moteur est implémenté, testé (162 tests dédiés) et
+> **Statut : NO-GO pour la production.** Le moteur est implémenté, testé (185 tests dédiés) et
 > branché sur toutes les voies d'effet cartographiées, mais **rien n'a été testé sur un vrai
 > téléphone Android** et plusieurs limites (section 6) empêchent de le déclarer prêt.
 > Branche : `policy-engine-v1` (non fusionnée dans `main`).
@@ -15,6 +15,21 @@ moteur d'exécution, immédiatement avant l'effet, pas dans les points d'entrée
 entrée (voix / API / MCP / CLI) → agent → outil → PolicyGuardedDriver → [Policy Engine] → AndroidAdbDriver → téléphone
                                           └→ command_tool (adb direct) → _policy_gate → [Policy Engine]
 ```
+
+## 1 bis. Correctifs v1.1 (contre-audit du 9 novembre 2026)
+
+| Constat | Correctif | Test |
+|---|---|---|
+| P0-01 clic non identifiable autorisé | `Action.ui_known` (défaut `False`). Écran illisible, application inconnue ou contrôle sans libellé dans une app de messagerie/achat → `REQUIRE_APPROVAL`. Les swipes ne sont pas concernés. | `test_v11.py` |
+| P0-02 empreinte incomplète | le digest couvre aussi demandeur, application au premier plan, libellé de la cible, `ui_known` et libellés shell. Après une approbation, l'écran est relu : s'il a changé, l'action est refusée (l'approbation est déjà consommée). | `test_v11.py` |
+| P1-03 délégation `__getattr__` | liste blanche explicite (`action_history`, `get_ui_hierarchy`), tout le reste lève `AttributeError` ; le pilote interne est en attribut à nom mutilé ; test statique qu'aucun code externe n'y touche. | `test_v11.py` |
+| P1-04 audit indisponible | en production (ou `ARTEMIS_POLICY_AUDIT_REQUIRED=1`), même une action `ALLOW` est refusée si la trace ne peut être écrite. | `test_v11.py` |
+| Propagation identité/origine | l'origine vient de `ARTEMIS_TASK_INGRESS` (worker, CLI), `ensure_context("mcp")` à l'entrée MCP, session via `ARTEMIS_SESSION_ID`, demandeur via `ARTEMIS_POLICY_REQUESTER` posé par la file de tâches. | `test_v11.py` |
+
+Limite assumée : le demandeur est une **classe** d'appelant (`api-bearer` / `api-anonymous`), pas une
+identité par utilisateur, car l'API n'a qu'un jeton partagé. L'origine déclarée par le client
+(`ingress`) n'est pas authentifiée : elle sert à l'audit et à la liaison d'approbation, jamais à
+assouplir une décision.
 
 ## 2. Modèle d'action et décisions
 
@@ -91,18 +106,17 @@ Les points d'entrée voix, `/api/run`, MCP et CLI convergent tous vers ce même 
 
 1. **Aucun test sur téléphone réel.** Tout est vérifié avec des pilotes factices / mock. Le test
    « Ouvre les paramètres du téléphone » reste à faire par Zaki.
-2. **Identité et origine partielles.** L'origine/la session ne sont enregistrées que si un point
-   d'entrée appelle `set_context(...)` (ou via `ARTEMIS_POLICY_ORIGIN` / `ARTEMIS_SESSION_ID`).
-   `/api/run` ne le fait pas encore : l'audit indique alors `unknown`, et la liaison de l'approbation
-   à l'identité est faible (le digest inclut une session vide). Le contexte ne traverse pas la
-   frontière du sous-processus worker.
+2. **Identité non authentifiée par utilisateur.** Origine, session et demandeur traversent désormais
+   le worker via l'environnement (v1.1), mais l'API n'a qu'un jeton partagé et `ingress` est déclaré
+   par le client. Le point d'entrée voix passe par `/api/run` et apparaît comme `task:<ingress>`.
 3. **Utilisations brutes en lecture seule** de `device.shell` hors du driver (logcat, dumpsys, date
    dans `mobile/log_utils.py`, `utils/app_launch_utils.py`, `platform_specific_commands_controller.py`).
 4. **Hors périmètre** : scripts sous `scripts/`, outils d'infrastructure (serveur adb, émulateur,
    scrcpy, accessibilité), `python_executor` (exécution côté hôte).
 5. `manage_task send_input` envoie de l'entrée standard à une commande déjà autorisée.
 6. `input tap` via shell n'est résolu par libellé que si les coordonnées sont littérales.
-7. Un tap sans paquet au premier plan identifiable est autorisé (mais journalisé).
+7. (corrigé en v1.1) un tap sans application identifiable exige maintenant une approbation. Coût : une
+   seconde lecture d'écran après chaque approbation.
 8. Latence : une lecture d'écran par tap (jusqu'à 3 s de délai maximal).
 9. **Changement de comportement** : `echo $VAR` et autres expansions sont refusés (`UNKNOWN`) ; deux
    tests existants ont été adaptés (`printenv`, `cat`) sans assouplir la politique.
@@ -143,10 +157,12 @@ voies non cartographiées (voir limites 3 et 4).
 | `ARTEMIS_POLICY_FINANCE` | `approve` pour rétrograder la finance de `DENY` à `REQUIRE_APPROVAL` |
 | `ARTEMIS_APPROVAL_TIMEOUT` | durée de vie d'une demande (s, défaut 120) |
 | `ARTEMIS_APPROVER_TOKENS` | `nom:jeton,…` pour l'API d'approbation (≠ `ARTEMIS_API_TOKEN`) |
+| `ARTEMIS_POLICY_AUDIT_REQUIRED` | `1` pour refuser aussi les `ALLOW` si l'audit est indisponible (automatique en production) |
+| `ARTEMIS_POLICY_REQUESTER` | classe de l'appelant, posée par la file de tâches |
 | `ARTEMIS_POLICY_DIR` | dossier du journal et de la base d'approbations |
 | `ARTEMIS_POLICY_ORIGIN`, `ARTEMIS_SESSION_ID` | origine / session par défaut quand aucun contexte n'est posé |
 
 ## 9. Tests
 
-`uv run --no-sync pytest tests/unit/policy tests/unit/tools/test_command_tool.py -q` — 188 tests.
+`uv run --no-sync pytest tests/unit/policy tests/unit/tools/test_command_tool.py -q` — 211 tests (185 + 26 de `command_tool`).
 Ajoutés au job CI bloquant. Ruff, quality ratchet et pyright passent.

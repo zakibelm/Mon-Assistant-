@@ -80,10 +80,22 @@ def current_context() -> PolicyContext:
     ctx = _current.get()
     if ctx is not None:
         return ctx
+    ingress = os.environ.get("ARTEMIS_TASK_INGRESS")
     return PolicyContext(
-        origin=os.environ.get("ARTEMIS_POLICY_ORIGIN", "unknown"),
+        origin=os.environ.get("ARTEMIS_POLICY_ORIGIN")
+        or (f"task:{ingress}" if ingress else "unknown"),
         session_id=os.environ.get("ARTEMIS_SESSION_ID", ""),
+        requester=os.environ.get("ARTEMIS_POLICY_REQUESTER", ""),
     )
+
+
+def ensure_context(origin: str) -> None:
+    """Record ``origin`` for this entry point unless a richer context already exists."""
+    if _current.get() is not None:
+        return
+    base = current_context()
+    if base.origin == "unknown":
+        set_context(origin, session_id=base.session_id, requester=base.requester)
 
 
 @dataclass
@@ -98,6 +110,8 @@ class Action:
     context: PolicyContext = field(default_factory=PolicyContext)
     # (x, y) -> visible label, pre-resolved by the guard for `input tap` inside shell lines
     labels: dict[tuple[int, int], str] = field(default_factory=dict)
+    # True only when the screen hierarchy was actually read for this action. Unknown => fail closed.
+    ui_known: bool = False
 
     def digest(self) -> str:
         """Stable identity of THIS action for THIS device/session/origin (used by approvals)."""
@@ -108,6 +122,11 @@ class Action:
                 "params": self.params,
                 "session": self.context.session_id,
                 "origin": self.context.origin,
+                "requester": self.context.requester,
+                "package": self.foreground_package,
+                "label": self.target_label,
+                "ui_known": self.ui_known,
+                "labels": sorted((f"{k[0]},{k[1]}", v) for k, v in self.labels.items()),
             },
             sort_keys=True,
             default=str,

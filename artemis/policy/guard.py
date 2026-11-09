@@ -31,10 +31,10 @@ from artemis.policy.engine import PolicyEngine, get_engine
 from artemis.policy.model import Action, current_context
 from artemis.policy.rules import parse_shell
 
-# Raw handles that would let a caller run shell/input behind the guard's back.
-_RAW_HANDLES = frozenset(
-    {"device", "_device", "adb_client", "ui_adb_client", "ui_client", "_ui_client", "adb", "_adb"}
-)
+# The only attributes read through the guard that are not BaseDeviceDriver operations. Anything
+# else (including raw adb handles) is refused rather than silently delegated.
+_READ_ONLY_PASSTHROUGH = frozenset({"action_history", "get_ui_hierarchy"})
+
 _LOOKUP_TIMEOUT = 3.0
 
 
@@ -92,7 +92,7 @@ def label_at(elements: list[dict[str, Any]], x: int, y: int) -> str:
 
 class PolicyGuardedDriver(BaseDeviceDriver):
     def __init__(self, inner: BaseDeviceDriver, engine: PolicyEngine | None = None) -> None:
-        self._inner = inner
+        self.__inner = inner
         self._engine = engine
 
     @property
@@ -100,49 +100,65 @@ class PolicyGuardedDriver(BaseDeviceDriver):
         return self._engine or get_engine()
 
     def __getattr__(self, name: str) -> Any:
-        if name in _RAW_HANDLES:
-            raise AttributeError(
-                f"{name!r} is not exposed through the policy guard; use the driver methods"
-            )
-        return getattr(self._inner, name)
+        if name in _READ_ONLY_PASSTHROUGH:
+            return getattr(self.__inner, name)
+        raise AttributeError(f"{name!r} is not exposed through the policy guard")
 
     # ---- context gathering (best effort, never raises) -------------------------------
     async def _foreground(self) -> str | None:
         try:
-            return await asyncio.wait_for(self._inner.get_current_package(), _LOOKUP_TIMEOUT)
+            return await asyncio.wait_for(self.__inner.get_current_package(), _LOOKUP_TIMEOUT)
         except Exception:  # noqa: BLE001
             return None
 
-    async def _elements(self) -> list[dict[str, Any]]:
+    async def _elements(self) -> list[dict[str, Any]] | None:
         try:
             data = await asyncio.wait_for(
-                self._inner.get_screen_data(skip_settling=True), _LOOKUP_TIMEOUT
+                self.__inner.get_screen_data(skip_settling=True), _LOOKUP_TIMEOUT
             )
             return list(data.ui_elements or [])
         except Exception:  # noqa: BLE001
-            return []
+            return None
 
-    async def _gate(self, op: str, params: dict[str, Any], *, point: tuple[int, int] | None = None,
-                    labels_for: list[tuple[int, int]] | None = None) -> str:  # fmt: skip
+    async def _observe(
+        self, op: str, params: dict[str, Any], point: tuple[int, int] | None,
+        labels_for: list[tuple[int, int]] | None,
+    ) -> Action:  # fmt: skip
+        """Build the Action from what is on screen RIGHT NOW (never raises)."""
         package = await self._foreground()
         label = None
         labels: dict[tuple[int, int], str] = {}
+        ui_known = False
         wanted = ([point] if point else []) + (labels_for or [])
         if wanted:
             elements = await self._elements()
-            for xy in wanted:
-                labels[xy] = label_at(elements, *xy)
-            label = labels.get(point) if point else None
-        action = Action(
+            if elements is not None:
+                ui_known = True
+                for xy in wanted:
+                    labels[xy] = label_at(elements, *xy)
+                label = labels.get(point) if point else None
+        return Action(
             op=op,
-            device_id=self._inner.device_id,
+            device_id=self.__inner.device_id,
             params=params,
             foreground_package=package,
             target_label=label or None,
             context=current_context(),
             labels={k: v for k, v in labels.items() if v},
+            ui_known=ui_known,
         )
-        return await self.engine.enforce(action)
+
+    async def _gate(self, op: str, params: dict[str, Any], *, point: tuple[int, int] | None = None,
+                    labels_for: list[tuple[int, int]] | None = None) -> str:  # fmt: skip
+        action = await self._observe(op, params, point, labels_for)
+        trace, was_approved = await self.engine.enforce_with_status(action)
+        if was_approved and (point or labels_for):
+            # The human approved the screen they were shown. If the screen changed since
+            # (other app, other label under the same coordinates), the approval is void.
+            again = await self._observe(op, params, point, labels_for)
+            if again.digest() != action.digest():
+                self.engine.reject_stale_approval(trace, action)
+        return trace
 
     async def _run(self, trace: str, call):  # noqa: ANN001
         try:
@@ -156,23 +172,23 @@ class PolicyGuardedDriver(BaseDeviceDriver):
     # ---- BaseDeviceDriver -----------------------------------------------------------
     @property
     def device_id(self) -> str:
-        return self._inner.device_id
+        return self.__inner.device_id
 
     @property
     def screen_size(self) -> tuple[int, int]:
-        return self._inner.screen_size
+        return self.__inner.screen_size
 
     async def connect(self) -> None:
-        await self._inner.connect()
+        await self.__inner.connect()
 
     async def disconnect(self) -> None:
-        await self._inner.disconnect()
+        await self.__inner.disconnect()
 
     async def get_screen_data(self, skip_settling: bool = False) -> ScreenData:
-        return await self._inner.get_screen_data(skip_settling=skip_settling)
+        return await self.__inner.get_screen_data(skip_settling=skip_settling)
 
     async def get_current_package(self) -> str | None:
-        return await self._inner.get_current_package()
+        return await self.__inner.get_current_package()
 
     async def tap(
         self, x: int, y: int, duration_ms: int = 100, times: int = 1, delay_ms: int = 100
@@ -181,12 +197,12 @@ class PolicyGuardedDriver(BaseDeviceDriver):
             "tap", {"x": int(x), "y": int(y), "times": int(times)}, point=(int(x), int(y))
         )
         return await self._run(
-            trace, self._inner.tap(x, y, duration_ms=duration_ms, times=times, delay_ms=delay_ms)
+            trace, self.__inner.tap(x, y, duration_ms=duration_ms, times=times, delay_ms=delay_ms)
         )
 
     async def long_press(self, x: int, y: int, duration_ms: int = 1000) -> bool:
         trace = await self._gate("long_press", {"x": int(x), "y": int(y)}, point=(int(x), int(y)))
-        return await self._run(trace, self._inner.long_press(x, y, duration_ms=duration_ms))
+        return await self._run(trace, self.__inner.long_press(x, y, duration_ms=duration_ms))
 
     async def swipe(
         self, start_x: int, start_y: int, end_x: int, end_y: int, duration_ms: int = 800
@@ -196,7 +212,7 @@ class PolicyGuardedDriver(BaseDeviceDriver):
             {"x": int(start_x), "y": int(start_y), "end_x": int(end_x), "end_y": int(end_y)},
         )
         return await self._run(
-            trace, self._inner.swipe(start_x, start_y, end_x, end_y, duration_ms=duration_ms)
+            trace, self.__inner.swipe(start_x, start_y, end_x, end_y, duration_ms=duration_ms)
         )
 
     async def swipe_direction(self, direction: Any, duration_ms: int = 800) -> bool:
@@ -204,26 +220,26 @@ class PolicyGuardedDriver(BaseDeviceDriver):
             "swipe", {"direction": str(getattr(direction, "value", direction))}
         )
         return await self._run(
-            trace, self._inner.swipe_direction(direction, duration_ms=duration_ms)
+            trace, self.__inner.swipe_direction(direction, duration_ms=duration_ms)
         )
 
     async def input_text(self, text: str, clear_existing: bool = True) -> bool:
         params = {"length": len(text), "clear": bool(clear_existing),
                   "sha256": hashlib.sha256(text.encode()).hexdigest()}  # fmt: skip
         trace = await self._gate("input_text", params)
-        return await self._run(trace, self._inner.input_text(text, clear_existing=clear_existing))
+        return await self._run(trace, self.__inner.input_text(text, clear_existing=clear_existing))
 
     async def press_key(self, key: KeyCode | str | int) -> bool:
         trace = await self._gate("press_key", {"key": str(getattr(key, "value", key))})
-        return await self._run(trace, self._inner.press_key(key))
+        return await self._run(trace, self.__inner.press_key(key))
 
     async def launch_app(self, package_name: str) -> bool:
         trace = await self._gate("launch_app", {"package": package_name})
-        return await self._run(trace, self._inner.launch_app(package_name))
+        return await self._run(trace, self.__inner.launch_app(package_name))
 
     async def stop_app(self, package_name: str) -> bool:
         trace = await self._gate("stop_app", {"package": package_name})
-        return await self._run(trace, self._inner.stop_app(package_name))
+        return await self._run(trace, self.__inner.stop_app(package_name))
 
     async def check_shell(self, command: str) -> str:
         """Authorize a shell line WITHOUT running it (for tools that spawn adb themselves)."""
@@ -239,11 +255,11 @@ class PolicyGuardedDriver(BaseDeviceDriver):
     async def execute_shell(self, command: str, timeout_seconds: float = 15.0) -> str:
         trace = await self.check_shell(command)
         return await self._run(
-            trace, self._inner.execute_shell(command, timeout_seconds=timeout_seconds)
+            trace, self.__inner.execute_shell(command, timeout_seconds=timeout_seconds)
         )
 
     async def start_video_recording(self, output_dir: Path | None = None) -> None:
-        await self._inner.start_video_recording(output_dir)
+        await self.__inner.start_video_recording(output_dir)
 
     async def stop_video_recording(self) -> str | None:
-        return await self._inner.stop_video_recording()
+        return await self.__inner.stop_video_recording()

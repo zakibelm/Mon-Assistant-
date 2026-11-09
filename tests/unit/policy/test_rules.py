@@ -162,7 +162,9 @@ def test_parser_never_executes_or_expands():
     ],
 )
 def test_taps_are_judged_by_what_is_under_the_finger(label, package, expected):
-    action = Action("tap", "d", {"x": 1, "y": 1}, foreground_package=package, target_label=label)
+    action = Action(
+        "tap", "d", {"x": 1, "y": 1}, foreground_package=package, target_label=label, ui_known=True
+    )
     assert evaluate(action).decision is expected
 
 
