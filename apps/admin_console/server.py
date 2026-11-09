@@ -71,7 +71,11 @@ from artemis.config import (
 from artemis.resources import get_bundled_showcase_dist
 
 try:
-    from admin_console.core.security import BearerTokenMiddleware, SameOriginBoundaryMiddleware
+    from admin_console.core.security import (
+        BearerTokenMiddleware,
+        SameOriginBoundaryMiddleware,
+        require_token_for_remote_bind,
+    )
     from admin_console.core.state import ServerState, state
     from admin_console.database.connection import db_session, get_db
     from admin_console.database.repositories.session_repository import session_repo
@@ -87,6 +91,7 @@ except ImportError:
     from apps.admin_console.core.security import (
         BearerTokenMiddleware,
         SameOriginBoundaryMiddleware,
+        require_token_for_remote_bind,
     )
     from apps.admin_console.core.state import state
     from apps.admin_console.database.repositories.session_repository import session_repo
@@ -459,6 +464,7 @@ class ArtemisUvicornServer(uvicorn.Server):
 
 def run_ui_server(host: str, port: int, reload: bool = False) -> None:
     """Run the UI server with bounded, signal-aware graceful shutdown."""
+    require_token_for_remote_bind(host)
     state.host = host
     state.port = port
     write_server_info(port=port, host=host, lifecycle_token=LIFECYCLE_TOKEN)

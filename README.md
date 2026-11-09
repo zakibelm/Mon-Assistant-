@@ -61,7 +61,8 @@ Le texte passe par l'entrée standard, jamais par un shell. Le micro se coupe pe
 
 ## Durcissement du démon et des notifications
 
-- **Jeton d'API (optionnel)** : `ARTEMIS_API_TOKEN=...` exige `Authorization: Bearer` sur toute écriture `/api/*` (lancer une tâche, stop…). Le client et `artemis-voice --token` l'envoient. Sans la variable, rien ne change. À combiner avec un accès réseau restreint (Tailscale, tunnel SSH).
+- **Jeton d'API** : avec `ARTEMIS_API_TOKEN=...`, toute requête (HTTP ou WebSocket, lectures comprises) vers `/api/`, `/images/`, `/videos/` et `/local_file` exige `Authorization: Bearer <jeton>` (schéma exact, jeton nu refusé). Cela inclut le flux d'écran du téléphone `/api/stream/device-live`. `/api/status` et `/api/health` restent ouverts pour les vérifications de disponibilité. Le client et `artemis-voice --token` envoient l'en-tête. Sans la variable, rien ne change en boucle locale.
+- **Écoute distante** : lancer le serveur sur une adresse non locale est refusé sans `ARTEMIS_API_TOKEN` (exception explicite : `ARTEMIS_ALLOW_INSECURE_REMOTE=1`). Si le jeton est défini, la console web dans le navigateur ne peut plus lire ces routes : utilise le client, ou un tunnel Tailscale/SSH avec jeton. Les images Docker lancent uvicorn directement : définis-y le jeton.
 - **`ARTEMIS_NOTIFY_CMD` sans shell par défaut** : la commande est découpée en arguments, le texte des événements reste une simple donnée. Pour des pipes ou redirections, activer `ARTEMIS_NOTIFY_SHELL=1` (mode shell historique, valeurs échappées).
 - **CI** : les tests d'`artemis-voice` et des notificateurs tournent à chaque push et pull request.
 - Dépendance `posthog` inutilisée retirée.

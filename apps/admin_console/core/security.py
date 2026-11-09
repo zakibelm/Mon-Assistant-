@@ -179,33 +179,43 @@ class SameOriginBoundaryMiddleware:
 
 
 class BearerTokenMiddleware:
-    """Optional shared-secret check on state-changing API calls.
+    """Optional shared-secret check on every sensitive route (reads included).
 
-    Off unless ``ARTEMIS_API_TOKEN`` is set, so existing setups are unchanged. When set,
-    every ``POST``/``PUT``/``PATCH``/``DELETE`` under ``/api/`` needs
-    ``Authorization: Bearer <token>`` (what ``artemis-client`` and ``artemis-voice`` send
-    with ``--token``). Reads stay open so the local console keeps working.
+    Off unless ``ARTEMIS_API_TOKEN`` is set, so loopback setups are unchanged. When set,
+    any request (HTTP or WebSocket, any method) to ``/api/``, ``/images/``, ``/videos/``
+    or ``/local_file`` needs ``Authorization: Bearer <token>``: task control, session
+    data, media and the live phone-screen stream (``/api/stream/device-live``).
+    ``/api/status`` and ``/api/health`` stay open for readiness checks. The scheme must
+    be exactly ``Bearer``; a bare token is refused.
     """
 
-    _WRITE_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+    _PROTECTED_PREFIXES = ("/api/", "/images/", "/videos/", "/local_file")
+    _OPEN_PATHS = frozenset({"/api/status", "/api/health"})
 
     def __init__(self, app, token: str | None = None) -> None:
         self.app = app
         self.token = token if token is not None else os.environ.get("ARTEMIS_API_TOKEN", "")
 
+    def _protected(self, path: str) -> bool:
+        return path.startswith(self._PROTECTED_PREFIXES) and path not in self._OPEN_PATHS
+
+    @staticmethod
+    def _bearer(headers: list[tuple[bytes, bytes]]) -> str | None:
+        for name, value in headers:
+            if name == b"authorization":
+                scheme, _, credentials = value.decode("latin-1").partition(" ")
+                return credentials.strip() if scheme == "Bearer" else None
+        return None
+
     async def __call__(self, scope, receive, send) -> None:
-        if (
-            self.token
-            and scope["type"] == "http"
-            and scope["method"] in self._WRITE_METHODS
-            and scope["path"].startswith("/api/")
-        ):
+        if self.token and scope["type"] in {"http", "websocket"} and self._protected(scope["path"]):
             import hmac
 
-            headers = dict(scope["headers"])
-            supplied = headers.get(b"authorization", b"").decode("latin-1")
-            supplied = supplied.removeprefix("Bearer ").strip()
-            if not hmac.compare_digest(supplied.encode(), self.token.encode()):
+            supplied = self._bearer(scope["headers"])
+            if supplied is None or not hmac.compare_digest(supplied.encode(), self.token.encode()):
+                if scope["type"] == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                    return
                 body = json.dumps({"detail": "invalid_or_missing_token"}).encode()
                 await send(
                     {
@@ -221,3 +231,19 @@ class BearerTokenMiddleware:
                 await send({"type": "http.response.body", "body": body})
                 return
         await self.app(scope, receive, send)
+
+
+def require_token_for_remote_bind(host: str, token: str | None = None) -> None:
+    """Refuse a non-loopback bind unless a token is set (or the operator opts out)."""
+    token = token if token is not None else os.environ.get("ARTEMIS_API_TOKEN", "")
+    if token or os.environ.get("ARTEMIS_ALLOW_INSECURE_REMOTE") == "1":
+        return
+    try:
+        loopback = ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        loopback = host.lower() == "localhost"
+    if not loopback:
+        raise SystemExit(
+            f"Refusing to listen on {host}: set ARTEMIS_API_TOKEN (or ARTEMIS_ALLOW_INSECURE_REMOTE=1 "
+            "to accept the risk). Prefer a Tailscale/SSH tunnel on loopback."
+        )
