@@ -1,0 +1,47 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artemis-voice"
+version = "0.1.0"
+description = "Voice control (Whisper) for Artemis Android automation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+# The voice layer talks to the daemon through the zero-dependency remote SDK.
+dependencies = ["artemis-client>=0.1.0"]
+
+[project.optional-dependencies]
+# Local, free speech-to-text (default provider).
+local = ["faster-whisper>=1.0", "numpy>=1.26"]
+# Live microphone capture on a desktop/laptop host.
+mic = ["sounddevice>=0.4"]
+dev = ["pytest>=8"]
+
+[project.scripts]
+artemis-voice = "artemis_voice.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+artemis_voice = ["web/index.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "../artemis-client/src"]

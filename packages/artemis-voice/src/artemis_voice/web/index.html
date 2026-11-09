@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Artemis — Commande vocale</title>
+<style>
+  :root { color-scheme: light dark; --accent:#1a73e8; --danger:#d93025; --ok:#188038; }
+  * { box-sizing: border-box; }
+  body { font: 16px/1.4 system-ui, sans-serif; margin: 0; padding: 16px; max-width: 560px; margin-inline: auto; }
+  h1 { font-size: 1.2rem; margin: 0 0 12px; }
+  #mic { width: 100%; padding: 28px; font-size: 1.2rem; border: 0; border-radius: 16px; background: var(--accent); color: #fff; touch-action: none; user-select: none; }
+  #mic.rec { background: var(--danger); }
+  #mic:disabled { opacity: .5; }
+  textarea { width: 100%; min-height: 84px; margin-top: 12px; padding: 10px; font: inherit; border-radius: 10px; border: 1px solid #8886; }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row button { flex: 1; padding: 14px; font-size: 1rem; border-radius: 10px; border: 1px solid #8886; background: transparent; color: inherit; }
+  button.go { background: var(--ok); color: #fff; border: 0; }
+  button.warn { background: var(--danger); color: #fff; border: 0; }
+  #status { margin-top: 12px; min-height: 1.4em; }
+  #warn { margin-top: 8px; color: var(--danger); font-weight: 600; }
+  input#token { width: 100%; padding: 8px; margin-bottom: 12px; border-radius: 8px; border: 1px solid #8886; }
+  #voiceRow { display:block; margin-bottom:10px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>🎙️ Artemis — Commande vocale</h1>
+<input id="token" type="password" placeholder="Jeton d'accès (si requis)" autocomplete="off">
+<label id="voiceRow"><input id="voiceOn" type="checkbox" checked> 🔊 Réponses vocales</label>
+<button id="mic" type="button">Maintenir pour parler</button>
+<textarea id="text" placeholder="Ce que j'ai compris apparaît ici — tu peux corriger avant d'exécuter."></textarea>
+<div id="warn" hidden></div>
+<div class="row">
+  <button id="run" class="go" type="button" disabled>Exécuter</button>
+  <button id="stop" type="button">⏹ Stop</button>
+</div>
+<div id="status" role="status" aria-live="polite"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const mic = $("mic"), text = $("text"), runBtn = $("run"), stopBtn = $("stop"), statusEl = $("status"), warnEl = $("warn"), tokenEl = $("token"), voiceOn = $("voiceOn");
+const TARGET_RATE = 16000;
+let ctx = null, stream = null, node = null, source = null, chunks = [], recording = false, taskId = null, pollTimer = null;
+
+try { tokenEl.value = sessionStorage.getItem("artemis_token") || ""; } catch (e) {}
+tokenEl.addEventListener("change", () => { try { sessionStorage.setItem("artemis_token", tokenEl.value); } catch (e) {} });
+
+function setStatus(msg, say) { statusEl.textContent = msg; if (say) speak(say); }
+
+// ---- voice replies: server voice (/api/speak) if configured, else the browser's own ----
+let serverTts = false, audioEl = null, speakSeq = 0;
+try { voiceOn.checked = localStorage.getItem("artemis_voice") !== "off"; } catch (e) {}
+voiceOn.addEventListener("change", () => {
+  try { localStorage.setItem("artemis_voice", voiceOn.checked ? "on" : "off"); } catch (e) {}
+  if (!voiceOn.checked) cancelSpeech();
+});
+function cancelSpeech() {
+  speakSeq++;
+  if (audioEl) { audioEl.pause(); audioEl = null; }
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}
+function browserSpeak(msg) {
+  if (!window.speechSynthesis) return;
+  const u = new SpeechSynthesisUtterance(msg);
+  const voices = window.speechSynthesis.getVoices();
+  const pick = voices.find((v) => v.lang === "fr-CA") || voices.find((v) => v.lang.startsWith("fr"));
+  if (pick) { u.voice = pick; u.lang = pick.lang; } else { u.lang = "fr-FR"; }
+  window.speechSynthesis.speak(u);
+}
+async function speak(msg) {
+  if (!voiceOn.checked || !msg) return;
+  cancelSpeech();
+  const mine = speakSeq;
+  if (serverTts) {
+    try {
+      const res = await fetch("/api/speak", { method: "POST", headers: headers(true), body: JSON.stringify({ text: msg }) });
+      if (res.ok) {
+        const url = URL.createObjectURL(await res.blob());
+        if (mine !== speakSeq) { URL.revokeObjectURL(url); return; }
+        audioEl = new Audio(url);
+        audioEl.onended = () => URL.revokeObjectURL(url);
+        await audioEl.play();
+        return;
+      }
+    } catch (e) { /* fall back to the browser voice */ }
+  }
+  if (mine === speakSeq) browserSpeak(msg);
+}
+fetch("/api/health", { headers: headers(false) }).then((r) => r.json()).then((d) => { serverTts = !!d.tts; }).catch(() => {});
+function headers(json) {
+  const h = { "X-Artemis-Voice": "1" };
+  if (json) h["Content-Type"] = "application/json";
+  if (tokenEl.value) h["Authorization"] = "Bearer " + tokenEl.value;
+  return h;
+}
+
+function downsample(buffer, inRate) {
+  if (inRate === TARGET_RATE) return buffer;
+  const ratio = inRate / TARGET_RATE, outLen = Math.floor(buffer.length / ratio), out = new Float32Array(outLen);
+  for (let i = 0; i < outLen; i++) {
+    const start = Math.floor(i * ratio), end = Math.min(Math.floor((i + 1) * ratio), buffer.length);
+    let sum = 0, n = 0;
+    for (let j = start; j < end; j++) { sum += buffer[j]; n++; }
+    out[i] = n ? sum / n : 0;
+  }
+  return out;
+}
+function toWav(float32, rate) {
+  const view = new DataView(new ArrayBuffer(44 + float32.length * 2));
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) view.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); view.setUint32(4, 36 + float32.length * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  w(36, "data"); view.setUint32(40, float32.length * 2, true);
+  for (let i = 0; i < float32.length; i++) {
+    const s = Math.max(-1, Math.min(1, float32[i]));
+    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+  }
+  return new Blob([view], { type: "audio/wav" });
+}
+
+async function startRec() {
+  if (recording) return;
+  if (!navigator.mediaDevices || !window.isSecureContext) {
+    setStatus("Micro indisponible : ouvre cette page en HTTPS ou via localhost (tunnel SSH / Tailscale serve).");
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+  } catch (e) { setStatus("Accès au micro refusé."); return; }
+  ctx = new (window.AudioContext || window.webkitAudioContext)();
+  source = ctx.createMediaStreamSource(stream);
+  node = ctx.createScriptProcessor(4096, 1, 1);
+  chunks = [];
+  node.onaudioprocess = (e) => { if (recording) chunks.push(new Float32Array(e.inputBuffer.getChannelData(0))); };
+  source.connect(node); node.connect(ctx.destination);
+  cancelSpeech();
+  recording = true; mic.classList.add("rec"); mic.textContent = "Je t'écoute… relâche pour envoyer"; setStatus("");
+}
+
+async function stopRec() {
+  if (!recording) return;
+  recording = false; mic.classList.remove("rec"); mic.textContent = "Maintenir pour parler";
+  const rate = ctx.sampleRate;
+  node.disconnect(); source.disconnect(); stream.getTracks().forEach((t) => t.stop()); await ctx.close();
+  const total = chunks.reduce((n, c) => n + c.length, 0);
+  if (total < rate * 0.3) { setStatus("Trop court, réessaie."); return; }
+  const merged = new Float32Array(total); let off = 0;
+  for (const c of chunks) { merged.set(c, off); off += c.length; }
+  const wav = toWav(downsample(merged, rate), TARGET_RATE);
+  mic.disabled = true; setStatus("Transcription…");
+  try {
+    const res = await fetch("/api/transcribe", { method: "POST", headers: headers(false), body: wav });
+    const data = await res.json();
+    if (!res.ok) { setStatus("Erreur : " + (data.error || res.status)); return; }
+    if (!data.text) { setStatus("Rien compris, réessaie.", "Je n'ai rien compris, réessaie."); return; }
+    text.value = data.goal || data.text; refreshButtons(data); setStatus("Vérifie, puis appuie sur Exécuter.", data.needs_confirmation ? "Action sensible : " + (data.goal || data.text) + ". Vérifie, puis confirme." : "J'ai compris : " + (data.goal || data.text) + ".");
+  } catch (e) { setStatus("Réseau : " + e); } finally { mic.disabled = false; }
+}
+
+function refreshButtons(data) {
+  const sensitive = data && data.needs_confirmation;
+  runBtn.disabled = !text.value.trim();
+  runBtn.className = sensitive ? "warn" : "go";
+  runBtn.textContent = sensitive ? "Confirmer et exécuter" : "Exécuter";
+  runBtn.dataset.sensitive = sensitive ? "1" : "";
+  warnEl.hidden = !sensitive;
+  warnEl.textContent = sensitive ? "⚠️ Action sensible (paiement, envoi, suppression…). Vérifie la phrase avant de confirmer." : "";
+}
+text.addEventListener("input", () => refreshButtons(null));
+
+async function execute() {
+  const goal = text.value.trim(); if (!goal) return;
+  const confirmed = runBtn.dataset.sensitive === "1";
+  runBtn.disabled = true; setStatus("Envoi…");
+  try {
+    let res = await fetch("/api/execute", { method: "POST", headers: headers(true), body: JSON.stringify({ goal, confirmed }) });
+    let data = await res.json();
+    if (res.status === 409 && data.error === "confirmation_required") {
+      refreshButtons(data); runBtn.dataset.sensitive = "1"; runBtn.disabled = false; setStatus("Action sensible : confirme pour continuer.", "Action sensible. Confirme pour continuer."); return;
+    }
+    if (!res.ok) { setStatus("Refusé : " + (data.error || res.status)); runBtn.disabled = false; return; }
+    taskId = data.task_id; setStatus("Tâche lancée (" + data.profile + ")…", "C'est parti."); poll();
+  } catch (e) { setStatus("Réseau : " + e); runBtn.disabled = false; }
+}
+
+function poll() {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(async () => {
+    try {
+      const res = await fetch("/api/task?id=" + encodeURIComponent(taskId), { headers: headers(false) });
+      const d = await res.json();
+      if (!res.ok) { setStatus("Suivi : " + (d.error || res.status)); return; }
+      if (d.done) {
+        setStatus(d.succeeded ? "✅ Terminé. " + (d.output || "") : "❌ Non abouti (" + (d.error || d.status) + ")", d.succeeded ? "Terminé. " + (d.output || "") : "Je n'ai pas réussi.");
+        runBtn.disabled = false; return;
+      }
+      setStatus("En cours… (" + d.status + ")"); poll();
+    } catch (e) { setStatus("Réseau : " + e); }
+  }, 1500);
+}
+
+async function stopTask() {
+  cancelSpeech();
+  try {
+    const res = await fetch("/api/stop", { method: "POST", headers: headers(true), body: JSON.stringify({ task_id: taskId }) });
+    const d = await res.json(); setStatus(d.stopped ? "Tâche arrêtée." : (d.detail || "Arrêt demandé."));
+  } catch (e) { setStatus("Réseau : " + e); }
+}
+
+mic.addEventListener("pointerdown", (e) => { e.preventDefault(); startRec(); });
+mic.addEventListener("pointerup", stopRec);
+mic.addEventListener("pointercancel", stopRec);
+mic.addEventListener("contextmenu", (e) => e.preventDefault());
+runBtn.addEventListener("click", execute);
+stopBtn.addEventListener("click", stopTask);
+</script>
+</body>
+</html>
