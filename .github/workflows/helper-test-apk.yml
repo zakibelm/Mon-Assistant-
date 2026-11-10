@@ -52,6 +52,12 @@ jobs:
           grep -E "^package|launchable-activity|targetSdkVersion|sdkVersion" badging.txt
           grep -q "launchable-activity: name='com.artemis.helper.MainActivity'" badging.txt \
             || { echo "::error::no launcher activity in the APK"; exit 1; }
+          # Same key as the APK already installed, otherwise Android refuses the update
+          # (INSTALL_FAILED_UPDATE_INCOMPATIBLE).
+          NEW="$("$BT/apksigner" verify --print-certs ArtemisAccessibilityHelper.apk | grep -m1 'SHA-256 digest')"
+          KS="$(keytool -list -v -keystore debug.keystore -storepass android 2>/dev/null | grep -m1 'SHA256:' | sed 's/.*SHA256: *//' | tr -d ':' | tr 'A-F' 'a-f')"
+          echo "APK cert: $NEW"
+          echo "$NEW" | grep -qi "$KS" || { echo "::error::APK not signed with debug.keystore"; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
