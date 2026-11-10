@@ -16,6 +16,19 @@
         android:label="@string/app_name"
         android:supportsRtl="true">
 
+        <!-- Home screen: lets a person open the app, enable the service and run a self-test
+             without a computer. It exposes nothing to other apps. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
         <service
             android:name=".ArtemisAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
